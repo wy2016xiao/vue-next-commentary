@@ -13,20 +13,31 @@ yarn build dom
 yarn build core --formats cjs
 ```
 */
-
+// 增强版fs依赖
 const fs = require('fs-extra')
 const path = require('path')
 const zlib = require('zlib')
+// 给日志上色的依赖
 const chalk = require('chalk')
+// js调用外部shell命令
 const execa = require('execa')
+// 使用gzip同步压缩的api
 const { gzipSync } = require('zlib')
+// 压缩算法库
 const { compress } = require('brotli')
+
 const { targets: allTargets, fuzzyMatchTarget } = require('./utils')
 
+// 标准用法，取命令行参数
+// _值表示命令行参数，其他为命令行选项
 const args = require('minimist')(process.argv.slice(2))
+// 命令行参数
 const targets = args._
+// formats | f选项的参数
 const formats = args.formats || args.f
+// devOnly | d选项的参数
 const devOnly = args.devOnly || args.d
+
 const prodOnly = !devOnly && (args.prodOnly || args.p)
 const buildAllMatching = args.all || args.a
 const commit = execa.sync('git', ['rev-parse', 'HEAD']).stdout.slice(0, 7)
