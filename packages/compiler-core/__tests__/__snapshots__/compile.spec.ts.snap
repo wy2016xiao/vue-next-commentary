@@ -5,7 +5,7 @@ exports[`compiler: integration tests function mode 1`] = `
 
 return function render() {
   with (this) {
-    const { toString: _toString, openBlock: _openBlock, createVNode: _createVNode, createBlock: _createBlock, Empty: _Empty, Fragment: _Fragment, renderList: _renderList } = _Vue
+    const { toString: _toString, openBlock: _openBlock, createVNode: _createVNode, createBlock: _createBlock, Comment: _Comment, Fragment: _Fragment, renderList: _renderList } = _Vue
     
     return (_openBlock(), _createBlock(\\"div\\", {
       id: \\"foo\\",
@@ -26,7 +26,7 @@ return function render() {
 `;
 
 exports[`compiler: integration tests function mode w/ prefixIdentifiers: true 1`] = `
-"const { toString, openBlock, createVNode, createBlock, Empty, Fragment, renderList } = Vue
+"const { toString, openBlock, createVNode, createBlock, Comment, Fragment, renderList } = Vue
 
 return function render() {
   const _ctx = this
@@ -35,7 +35,7 @@ return function render() {
     class: _ctx.bar.baz
   }, [
     toString(_ctx.world.burn()),
-    (openBlock(), _ctx.ok)
+    (openBlock(), (_ctx.ok)
       ? createBlock(\\"div\\", { key: 0 }, \\"yes\\")
       : createBlock(Fragment, { key: 1 }, [\\"no\\"])),
     (openBlock(), createBlock(Fragment, null, renderList(_ctx.list, (value, index) => {
@@ -48,7 +48,7 @@ return function render() {
 `;
 
 exports[`compiler: integration tests module mode 1`] = `
-"import { toString, openBlock, createVNode, createBlock, Empty, Fragment, renderList } from \\"vue\\"
+"import { toString, openBlock, createVNode, createBlock, Comment, Fragment, renderList } from \\"vue\\"
 
 export default function render() {
   const _ctx = this
@@ -56,13 +56,13 @@ export default function render() {
     id: \\"foo\\",
     class: _ctx.bar.baz
   }, [
-    _toString(_ctx.world.burn()),
-    (openBlock(), _ctx.ok)
+    toString(_ctx.world.burn()),
+    (openBlock(), (_ctx.ok)
       ? createBlock(\\"div\\", { key: 0 }, \\"yes\\")
       : createBlock(Fragment, { key: 1 }, [\\"no\\"])),
     (openBlock(), createBlock(Fragment, null, renderList(_ctx.list, (value, index) => {
       return (openBlock(), createBlock(\\"div\\", null, [
-        createVNode(\\"span\\", null, _toString(value + index), 1 /* TEXT */)
+        createVNode(\\"span\\", null, toString(value + index), 1 /* TEXT */)
       ]))
     }), 128 /* UNKEYED_FRAGMENT */))
   ], 2 /* CLASS */))

@@ -1,18 +1,13 @@
-import {
-  ElementNode,
-  CompilerOptions,
-  parse,
-  transform,
-  ErrorCodes
-} from '../../src'
+import { CompilerOptions, parse, transform, ErrorCodes } from '../../src'
 import {
   RESOLVE_COMPONENT,
   CREATE_VNODE,
   MERGE_PROPS,
   RESOLVE_DIRECTIVE,
   APPLY_DIRECTIVES,
-  TO_HANDLERS
-} from '../../src/runtimeConstants'
+  TO_HANDLERS,
+  helperNameMap
+} from '../../src/runtimeHelpers'
 import {
   CallExpression,
   NodeTypes,
@@ -25,7 +20,7 @@ import { transformStyle } from '../../../compiler-dom/src/transforms/transformSt
 import { transformOn } from '../../src/transforms/vOn'
 import { transformBind } from '../../src/transforms/vBind'
 import { PatchFlags } from '@vue/shared'
-import { createObjectMatcher } from '../testUtils'
+import { createObjectMatcher, genFlagText } from '../testUtils'
 import { optimizeText } from '../../src/transforms/optimizeText'
 
 function parseWithElementTransform(
@@ -35,12 +30,14 @@ function parseWithElementTransform(
   root: RootNode
   node: CallExpression
 } {
-  const ast = parse(template, options)
+  // wrap raw template in an extra div so that it doesn't get turned into a
+  // block as root node
+  const ast = parse(`<div>${template}</div>`, options)
   transform(ast, {
-    nodeTransforms: [optimizeText, transformElement],
+    nodeTransforms: [transformElement, optimizeText],
     ...options
   })
-  const codegenNode = (ast.children[0] as ElementNode)
+  const codegenNode = (ast as any).children[0].children[0]
     .codegenNode as CallExpression
   expect(codegenNode.type).toBe(NodeTypes.JS_CALL_EXPRESSION)
   return {
@@ -52,13 +49,13 @@ function parseWithElementTransform(
 describe('compiler: element transform', () => {
   test('import + resolve component', () => {
     const { root } = parseWithElementTransform(`<Foo/>`)
-    expect(root.imports).toContain(RESOLVE_COMPONENT)
-    expect(root.statements[0]).toMatch(`${RESOLVE_COMPONENT}("Foo")`)
+    expect(root.helpers).toContain(RESOLVE_COMPONENT)
+    expect(root.components).toContain(`Foo`)
   })
 
   test('static props', () => {
     const { node } = parseWithElementTransform(`<div id="foo" class="bar" />`)
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(node.callee).toBe(CREATE_VNODE)
     expect(node.arguments).toMatchObject([
       `"div"`,
       createObjectMatcher({
@@ -70,7 +67,7 @@ describe('compiler: element transform', () => {
 
   test('props + children', () => {
     const { node } = parseWithElementTransform(`<div id="foo"><span/></div>`)
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(node.callee).toBe(CREATE_VNODE)
     expect(node.arguments).toMatchObject([
       `"div"`,
       createObjectMatcher({
@@ -81,7 +78,7 @@ describe('compiler: element transform', () => {
           type: NodeTypes.ELEMENT,
           tag: 'span',
           codegenNode: {
-            callee: `_${CREATE_VNODE}`,
+            callee: CREATE_VNODE,
             arguments: [`"span"`]
           }
         }
@@ -91,7 +88,7 @@ describe('compiler: element transform', () => {
 
   test('0 placeholder for children with no props', () => {
     const { node } = parseWithElementTransform(`<div><span/></div>`)
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(node.callee).toBe(CREATE_VNODE)
     expect(node.arguments).toMatchObject([
       `"div"`,
       `null`,
@@ -100,7 +97,7 @@ describe('compiler: element transform', () => {
           type: NodeTypes.ELEMENT,
           tag: 'span',
           codegenNode: {
-            callee: `_${CREATE_VNODE}`,
+            callee: CREATE_VNODE,
             arguments: [`"span"`]
           }
         }
@@ -111,8 +108,8 @@ describe('compiler: element transform', () => {
   test('v-bind="obj"', () => {
     const { root, node } = parseWithElementTransform(`<div v-bind="obj" />`)
     // single v-bind doesn't need mergeProps
-    expect(root.imports).not.toContain(MERGE_PROPS)
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(root.helpers).not.toContain(MERGE_PROPS)
+    expect(node.callee).toBe(CREATE_VNODE)
     // should directly use `obj` in props position
     expect(node.arguments[1]).toMatchObject({
       type: NodeTypes.SIMPLE_EXPRESSION,
@@ -124,11 +121,11 @@ describe('compiler: element transform', () => {
     const { root, node } = parseWithElementTransform(
       `<div id="foo" v-bind="obj" />`
     )
-    expect(root.imports).toContain(MERGE_PROPS)
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(root.helpers).toContain(MERGE_PROPS)
+    expect(node.callee).toBe(CREATE_VNODE)
     expect(node.arguments[1]).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${MERGE_PROPS}`,
+      callee: MERGE_PROPS,
       arguments: [
         createObjectMatcher({
           id: 'foo'
@@ -145,11 +142,11 @@ describe('compiler: element transform', () => {
     const { root, node } = parseWithElementTransform(
       `<div v-bind="obj" id="foo" />`
     )
-    expect(root.imports).toContain(MERGE_PROPS)
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(root.helpers).toContain(MERGE_PROPS)
+    expect(node.callee).toBe(CREATE_VNODE)
     expect(node.arguments[1]).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${MERGE_PROPS}`,
+      callee: MERGE_PROPS,
       arguments: [
         {
           type: NodeTypes.SIMPLE_EXPRESSION,
@@ -166,11 +163,11 @@ describe('compiler: element transform', () => {
     const { root, node } = parseWithElementTransform(
       `<div id="foo" v-bind="obj" class="bar" />`
     )
-    expect(root.imports).toContain(MERGE_PROPS)
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(root.helpers).toContain(MERGE_PROPS)
+    expect(node.callee).toBe(CREATE_VNODE)
     expect(node.arguments[1]).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${MERGE_PROPS}`,
+      callee: MERGE_PROPS,
       arguments: [
         createObjectMatcher({
           id: 'foo'
@@ -190,18 +187,18 @@ describe('compiler: element transform', () => {
     const { root, node } = parseWithElementTransform(
       `<div id="foo" v-on="obj" class="bar" />`
     )
-    expect(root.imports).toContain(MERGE_PROPS)
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(root.helpers).toContain(MERGE_PROPS)
+    expect(node.callee).toBe(CREATE_VNODE)
     expect(node.arguments[1]).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${MERGE_PROPS}`,
+      callee: MERGE_PROPS,
       arguments: [
         createObjectMatcher({
           id: 'foo'
         }),
         {
           type: NodeTypes.JS_CALL_EXPRESSION,
-          callee: `_${TO_HANDLERS}`,
+          callee: TO_HANDLERS,
           arguments: [
             {
               type: NodeTypes.SIMPLE_EXPRESSION,
@@ -220,18 +217,18 @@ describe('compiler: element transform', () => {
     const { root, node } = parseWithElementTransform(
       `<div id="foo" v-on="handlers" v-bind="obj" />`
     )
-    expect(root.imports).toContain(MERGE_PROPS)
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(root.helpers).toContain(MERGE_PROPS)
+    expect(node.callee).toBe(CREATE_VNODE)
     expect(node.arguments[1]).toMatchObject({
       type: NodeTypes.JS_CALL_EXPRESSION,
-      callee: `_${MERGE_PROPS}`,
+      callee: MERGE_PROPS,
       arguments: [
         createObjectMatcher({
           id: 'foo'
         }),
         {
           type: NodeTypes.JS_CALL_EXPRESSION,
-          callee: `_${TO_HANDLERS}`,
+          callee: TO_HANDLERS,
           arguments: [
             {
               type: NodeTypes.SIMPLE_EXPRESSION,
@@ -249,7 +246,7 @@ describe('compiler: element transform', () => {
 
   test('should handle plain <template> as normal element', () => {
     const { node } = parseWithElementTransform(`<template id="foo" />`)
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(node.callee).toBe(CREATE_VNODE)
     expect(node.arguments).toMatchObject([
       `"template"`,
       createObjectMatcher({
@@ -275,13 +272,13 @@ describe('compiler: element transform', () => {
         foo(dir) {
           _dir = dir
           return {
-            props: createObjectProperty(dir.arg!, dir.exp!),
+            props: [createObjectProperty(dir.arg!, dir.exp!)],
             needRuntime: false
           }
         }
       }
     })
-    expect(node.callee).toBe(`_${CREATE_VNODE}`)
+    expect(node.callee).toBe(CREATE_VNODE)
     expect(node.arguments[1]).toMatchObject({
       type: NodeTypes.JS_OBJECT_EXPRESSION,
       properties: [
@@ -312,19 +309,19 @@ describe('compiler: element transform', () => {
         }
       }
     )
-    expect(root.imports).toContain(RESOLVE_DIRECTIVE)
-    expect(root.statements[0]).toMatch(`${RESOLVE_DIRECTIVE}("foo")`)
+    expect(root.helpers).toContain(RESOLVE_DIRECTIVE)
+    expect(root.directives).toContain(`foo`)
 
-    expect(node.callee).toBe(`_${APPLY_DIRECTIVES}`)
+    expect(node.callee).toBe(APPLY_DIRECTIVES)
     expect(node.arguments).toMatchObject([
       {
         type: NodeTypes.JS_CALL_EXPRESSION,
-        callee: `_${CREATE_VNODE}`,
+        callee: CREATE_VNODE,
         arguments: [
           `"div"`,
           `null`,
           `null`,
-          `${PatchFlags.NEED_PATCH} /* NEED_PATCH */` // should generate appropriate flag
+          genFlagText(PatchFlags.NEED_PATCH) // should generate appropriate flag
         ]
       },
       {
@@ -353,16 +350,39 @@ describe('compiler: element transform', () => {
     ])
   })
 
+  test('directiveTransform with needRuntime: Symbol', () => {
+    const { root, node } = parseWithElementTransform(
+      `<div v-foo:bar="hello" />`,
+      {
+        directiveTransforms: {
+          foo() {
+            return {
+              props: [],
+              needRuntime: CREATE_VNODE
+            }
+          }
+        }
+      }
+    )
+
+    expect(root.helpers).toContain(CREATE_VNODE)
+    expect(root.helpers).not.toContain(RESOLVE_DIRECTIVE)
+    expect(root.directives.length).toBe(0)
+    expect((node as any).arguments[1].elements[0].elements[0]).toBe(
+      `_${helperNameMap[CREATE_VNODE]}`
+    )
+  })
+
   test('runtime directives', () => {
     const { root, node } = parseWithElementTransform(
       `<div v-foo v-bar="x" v-baz:[arg].mod.mad="y" />`
     )
-    expect(root.imports).toContain(RESOLVE_DIRECTIVE)
-    expect(root.statements[0]).toMatch(`${RESOLVE_DIRECTIVE}("foo")`)
-    expect(root.statements[1]).toMatch(`${RESOLVE_DIRECTIVE}("bar")`)
-    expect(root.statements[2]).toMatch(`${RESOLVE_DIRECTIVE}("baz")`)
+    expect(root.helpers).toContain(RESOLVE_DIRECTIVE)
+    expect(root.directives).toContain(`foo`)
+    expect(root.directives).toContain(`bar`)
+    expect(root.directives).toContain(`baz`)
 
-    expect(node.callee).toBe(`_${APPLY_DIRECTIVES}`)
+    expect(node.callee).toBe(APPLY_DIRECTIVES)
     expect(node.arguments).toMatchObject([
       {
         type: NodeTypes.JS_CALL_EXPRESSION
@@ -573,30 +593,30 @@ describe('compiler: element transform', () => {
 
       const { node: node2 } = parseWithBind(`<div>{{ foo }}</div>`)
       expect(node2.arguments.length).toBe(4)
-      expect(node2.arguments[3]).toBe(`${PatchFlags.TEXT} /* TEXT */`)
+      expect(node2.arguments[3]).toBe(genFlagText(PatchFlags.TEXT))
 
       // multiple nodes, merged with optimize text
       const { node: node3 } = parseWithBind(`<div>foo {{ bar }} baz</div>`)
       expect(node3.arguments.length).toBe(4)
-      expect(node3.arguments[3]).toBe(`${PatchFlags.TEXT} /* TEXT */`)
+      expect(node3.arguments[3]).toBe(genFlagText(PatchFlags.TEXT))
     })
 
     test('CLASS', () => {
       const { node } = parseWithBind(`<div :class="foo" />`)
       expect(node.arguments.length).toBe(4)
-      expect(node.arguments[3]).toBe(`${PatchFlags.CLASS} /* CLASS */`)
+      expect(node.arguments[3]).toBe(genFlagText(PatchFlags.CLASS))
     })
 
     test('STYLE', () => {
       const { node } = parseWithBind(`<div :style="foo" />`)
       expect(node.arguments.length).toBe(4)
-      expect(node.arguments[3]).toBe(`${PatchFlags.STYLE} /* STYLE */`)
+      expect(node.arguments[3]).toBe(genFlagText(PatchFlags.STYLE))
     })
 
     test('PROPS', () => {
       const { node } = parseWithBind(`<div id="foo" :foo="bar" :baz="qux" />`)
       expect(node.arguments.length).toBe(5)
-      expect(node.arguments[3]).toBe(`${PatchFlags.PROPS} /* PROPS */`)
+      expect(node.arguments[3]).toBe(genFlagText(PatchFlags.PROPS))
       expect(node.arguments[4]).toBe(`["foo", "baz"]`)
     })
 
@@ -606,9 +626,7 @@ describe('compiler: element transform', () => {
       )
       expect(node.arguments.length).toBe(5)
       expect(node.arguments[3]).toBe(
-        `${PatchFlags.PROPS |
-          PatchFlags.CLASS |
-          PatchFlags.STYLE} /* CLASS, STYLE, PROPS */`
+        genFlagText([PatchFlags.CLASS, PatchFlags.STYLE, PatchFlags.PROPS])
       )
       expect(node.arguments[4]).toBe(`["foo", "baz"]`)
     })
@@ -616,17 +634,13 @@ describe('compiler: element transform', () => {
     test('FULL_PROPS (v-bind)', () => {
       const { node } = parseWithBind(`<div v-bind="foo" />`)
       expect(node.arguments.length).toBe(4)
-      expect(node.arguments[3]).toBe(
-        `${PatchFlags.FULL_PROPS} /* FULL_PROPS */`
-      )
+      expect(node.arguments[3]).toBe(genFlagText(PatchFlags.FULL_PROPS))
     })
 
     test('FULL_PROPS (dynamic key)', () => {
       const { node } = parseWithBind(`<div :[foo]="bar" />`)
       expect(node.arguments.length).toBe(4)
-      expect(node.arguments[3]).toBe(
-        `${PatchFlags.FULL_PROPS} /* FULL_PROPS */`
-      )
+      expect(node.arguments[3]).toBe(genFlagText(PatchFlags.FULL_PROPS))
     })
 
     test('FULL_PROPS (w/ others)', () => {
@@ -634,34 +648,26 @@ describe('compiler: element transform', () => {
         `<div id="foo" v-bind="bar" :class="cls" />`
       )
       expect(node.arguments.length).toBe(4)
-      expect(node.arguments[3]).toBe(
-        `${PatchFlags.FULL_PROPS} /* FULL_PROPS */`
-      )
+      expect(node.arguments[3]).toBe(genFlagText(PatchFlags.FULL_PROPS))
     })
 
     test('NEED_PATCH (static ref)', () => {
       const { node } = parseWithBind(`<div ref="foo" />`)
       expect(node.arguments.length).toBe(4)
-      expect(node.arguments[3]).toBe(
-        `${PatchFlags.NEED_PATCH} /* NEED_PATCH */`
-      )
+      expect(node.arguments[3]).toBe(genFlagText(PatchFlags.NEED_PATCH))
     })
 
     test('NEED_PATCH (dynamic ref)', () => {
       const { node } = parseWithBind(`<div :ref="foo" />`)
       expect(node.arguments.length).toBe(4)
-      expect(node.arguments[3]).toBe(
-        `${PatchFlags.NEED_PATCH} /* NEED_PATCH */`
-      )
+      expect(node.arguments[3]).toBe(genFlagText(PatchFlags.NEED_PATCH))
     })
 
     test('NEED_PATCH (custom directives)', () => {
       const { node } = parseWithBind(`<div v-foo />`)
       const vnodeCall = node.arguments[0] as CallExpression
       expect(vnodeCall.arguments.length).toBe(4)
-      expect(vnodeCall.arguments[3]).toBe(
-        `${PatchFlags.NEED_PATCH} /* NEED_PATCH */`
-      )
+      expect(vnodeCall.arguments[3]).toBe(genFlagText(PatchFlags.NEED_PATCH))
     })
   })
 })

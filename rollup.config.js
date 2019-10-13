@@ -19,9 +19,11 @@ const packageOptions = pkg.buildOptions || {}
 // build aliases dynamically
 const aliasOptions = { resolve: ['.ts'] }
 fs.readdirSync(packagesDir).forEach(dir => {
+  if (dir === 'vue') {
+    return
+  }
   if (fs.statSync(path.resolve(packagesDir, dir)).isDirectory()) {
-    const name = dir === `vue` ? dir : `@vue/${dir}`
-    aliasOptions[name] = path.resolve(packagesDir, `${dir}/src/index`)
+    aliasOptions[`@vue/${dir}`] = path.resolve(packagesDir, `${dir}/src/index`)
   }
 })
 const aliasPlugin = alias(aliasOptions)
@@ -49,8 +51,8 @@ const configs = {
 }
 
 const defaultFormats = ['esm', 'cjs']
-const inlineFromats = process.env.FORMATS && process.env.FORMATS.split(',')
-const packageFormats = inlineFromats || packageOptions.formats || defaultFormats
+const inlineFormats = process.env.FORMATS && process.env.FORMATS.split(',')
+const packageFormats = inlineFormats || packageOptions.formats || defaultFormats
 const packageConfigs = process.env.PROD_ONLY
   ? []
   : packageFormats.map(format => createConfig(configs[format]))
@@ -72,7 +74,7 @@ function createConfig(output, plugins = []) {
   const isProductionBuild =
     process.env.__DEV__ === 'false' || /\.prod\.js$/.test(output.file)
   const isGlobalBuild = /\.global(\.prod)?\.js$/.test(output.file)
-  const isBunlderESMBuild = /\.esm\.js$/.test(output.file)
+  const isBundlerESMBuild = /\.esm\.js$/.test(output.file)
   const isBrowserESMBuild = /esm-browser(\.prod)?\.js$/.test(output.file)
 
   if (isGlobalBuild) {
@@ -116,7 +118,7 @@ function createConfig(output, plugins = []) {
       aliasPlugin,
       createReplacePlugin(
         isProductionBuild,
-        isBunlderESMBuild,
+        isBundlerESMBuild,
         (isGlobalBuild || isBrowserESMBuild) &&
           !packageOptions.enableNonBrowserBranches
       ),
@@ -131,10 +133,10 @@ function createConfig(output, plugins = []) {
   }
 }
 
-function createReplacePlugin(isProduction, isBunlderESMBuild, isBrowserBuild) {
+function createReplacePlugin(isProduction, isBundlerESMBuild, isBrowserBuild) {
   return replace({
     __COMMIT__: `"${process.env.COMMIT}"`,
-    __DEV__: isBunlderESMBuild
+    __DEV__: isBundlerESMBuild
       ? // preserve to be handled by bundlers
         `process.env.NODE_ENV !== 'production'`
       : // hard coded dev/prod builds

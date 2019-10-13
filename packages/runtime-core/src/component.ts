@@ -24,7 +24,11 @@ import {
   isObject
 } from '@vue/shared'
 import { SuspenseBoundary } from './suspense'
-import { CompilerOptions } from '@vue/compiler-dom'
+import {
+  CompilerError,
+  CompilerOptions,
+  generateCodeFrame
+} from '@vue/compiler-dom'
 
 export type Data = { [key: string]: unknown }
 
@@ -121,19 +125,19 @@ const emptyAppContext = createAppContext()
 export function createComponentInstance(
   vnode: VNode,
   parent: ComponentInternalInstance | null
-): ComponentInternalInstance {
+) {
   // inherit parent app context - or - if root, adopt from root vnode
   const appContext =
     (parent ? parent.appContext : vnode.appContext) || emptyAppContext
-  const instance = {
+  const instance: ComponentInternalInstance = {
     vnode,
     parent,
     appContext,
-    type: vnode.type as Component,
-    root: null as any, // set later so it can point to itself
+    type: vnode.type,
+    root: null!, // set later so it can point to itself
     next: null,
-    subTree: null as any,
-    update: null as any,
+    subTree: null!, // will be set synchronously right after creation
+    update: null!, // will be set synchronously right after creation
     render: null,
     renderProxy: null,
     propsProxy: null,
@@ -178,7 +182,7 @@ export function createComponentInstance(
     rtc: null,
     ec: null,
 
-    emit: (event: string, ...args: unknown[]) => {
+    emit: (event, ...args) => {
       const props = instance.vnode.props || EMPTY_OBJ
       const handler = props[`on${event}`] || props[`on${capitalize(event)}`]
       if (handler) {
@@ -319,7 +323,19 @@ function finishComponentSetup(
     if (Component.template && !Component.render) {
       if (compile) {
         Component.render = compile(Component.template, {
-          onError(err) {}
+          onError(err: CompilerError) {
+            if (__DEV__) {
+              const message = `Template compilation error: ${err.message}`
+              const codeFrame =
+                err.loc &&
+                generateCodeFrame(
+                  Component.template!,
+                  err.loc.start.offset,
+                  err.loc.end.offset
+                )
+              warn(codeFrame ? `${message}\n${codeFrame}` : message)
+            }
+          }
         })
       } else if (__DEV__) {
         warn(

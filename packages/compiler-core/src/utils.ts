@@ -14,14 +14,20 @@ import {
   ObjectExpression,
   Property,
   JSChildNode,
-  createObjectExpression
+  createObjectExpression,
+  SlotOutletNode,
+  TemplateNode,
+  BlockCodegenNode,
+  ElementCodegenNode,
+  SlotOutletCodegenNode,
+  ComponentCodegenNode,
+  ExpressionNode
 } from './ast'
 import { parse } from 'acorn'
 import { walk } from 'estree-walker'
 import { TransformContext } from './transform'
-import { OPEN_BLOCK, CREATE_BLOCK, MERGE_PROPS } from './runtimeConstants'
+import { OPEN_BLOCK, MERGE_PROPS, RENDER_SLOT } from './runtimeHelpers'
 import { isString, isFunction } from '@vue/shared'
-import { PropsExpression } from './transforms/transformElement'
 
 // cache node requires
 // lazy require dependencies so that they don't end up in rollup's dep graph
@@ -39,7 +45,7 @@ export function loadDep(name: string) {
   }
 }
 
-export const parseJS: typeof parse = (code: string, options: any) => {
+export const parseJS: typeof parse = (code, options) => {
   assert(
     !__BROWSER__,
     `Expression AST analysis can only be performed in non-browser builds.`
@@ -57,8 +63,13 @@ export const walkJS: typeof walk = (ast, walker) => {
   return walk(ast, walker)
 }
 
+const nonIdentifierRE = /^\d|[^\$\w]/
 export const isSimpleIdentifier = (name: string): boolean =>
-  !/^\d|[^\w]/.test(name)
+  !nonIdentifierRE.test(name)
+
+const memberExpRE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])*$/
+export const isMemberExpression = (path: string): boolean =>
+  memberExpRE.test(path)
 
 export function getInnerRange(
   loc: SourceLocation,
@@ -166,12 +177,12 @@ export function findProp(
 }
 
 export function createBlockExpression(
-  args: CallExpression['arguments'],
+  blockExp: BlockCodegenNode,
   context: TransformContext
 ): SequenceExpression {
   return createSequenceExpression([
     createCallExpression(context.helper(OPEN_BLOCK)),
-    createCallExpression(context.helper(CREATE_BLOCK), args)
+    blockExp
   ])
 }
 
@@ -180,21 +191,24 @@ export const isVSlot = (p: ElementNode['props'][0]): p is DirectiveNode =>
 
 export const isTemplateNode = (
   node: RootNode | TemplateChildNode
-): node is ElementNode & { tagType: ElementTypes.TEMPLATE } =>
+): node is TemplateNode =>
   node.type === NodeTypes.ELEMENT && node.tagType === ElementTypes.TEMPLATE
 
 export const isSlotOutlet = (
   node: RootNode | TemplateChildNode
-): node is ElementNode & { tagType: ElementTypes.ELEMENT } =>
+): node is SlotOutletNode =>
   node.type === NodeTypes.ELEMENT && node.tagType === ElementTypes.SLOT
 
 export function injectProp(
-  props: PropsExpression | undefined | 'null',
+  node: ElementCodegenNode | ComponentCodegenNode | SlotOutletCodegenNode,
   prop: Property,
   context: TransformContext
-): ObjectExpression | CallExpression {
-  if (props == null || props === `null`) {
-    return createObjectExpression([prop])
+) {
+  let propsWithInjection: ObjectExpression | CallExpression
+  const props =
+    node.callee === RENDER_SLOT ? node.arguments[2] : node.arguments[1]
+  if (props == null || isString(props)) {
+    propsWithInjection = createObjectExpression([prop])
   } else if (props.type === NodeTypes.JS_CALL_EXPRESSION) {
     // merged props... add ours
     // only inject key to object literal if it's the first argument so that
@@ -205,15 +219,31 @@ export function injectProp(
     } else {
       props.arguments.unshift(createObjectExpression([prop]))
     }
-    return props
+    propsWithInjection = props
   } else if (props.type === NodeTypes.JS_OBJECT_EXPRESSION) {
     props.properties.unshift(prop)
-    return props
+    propsWithInjection = props
   } else {
     // single v-bind with expression, return a merged replacement
-    return createCallExpression(context.helper(MERGE_PROPS), [
+    propsWithInjection = createCallExpression(context.helper(MERGE_PROPS), [
       createObjectExpression([prop]),
       props
     ])
   }
+  if (node.callee === RENDER_SLOT) {
+    node.arguments[2] = propsWithInjection
+  } else {
+    node.arguments[1] = propsWithInjection
+  }
+}
+
+export function toValidAssetId(
+  name: string,
+  type: 'component' | 'directive'
+): string {
+  return `_${type}_${name.replace(/[^\w]/g, '_')}`
+}
+
+export function isEmptyExpression(node: ExpressionNode) {
+  return node.type === NodeTypes.SIMPLE_EXPRESSION && !node.content.trim()
 }

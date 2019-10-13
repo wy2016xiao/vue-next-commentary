@@ -16,8 +16,6 @@ yarn build core --formats cjs
 // 增强版fs依赖
 const fs = require('fs-extra')
 const path = require('path')
-const zlib = require('zlib')
-// 给日志上色的依赖
 const chalk = require('chalk')
 // js调用外部shell命令
 const execa = require('execa')
@@ -99,7 +97,7 @@ async function build(target) {
         args.types ? `TYPES:true` : ``,
         prodOnly ? `PROD_ONLY:true` : ``
       ]
-        .filter(_ => _)
+        .filter(Boolean)
         .join(',')
     ],
     { stdio: 'inherit' }

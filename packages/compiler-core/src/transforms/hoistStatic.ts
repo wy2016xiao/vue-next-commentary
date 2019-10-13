@@ -2,23 +2,49 @@ import {
   RootNode,
   NodeTypes,
   TemplateChildNode,
-  CallExpression,
-  ElementNode,
-  ElementTypes
+  ElementTypes,
+  ElementCodegenNode,
+  PlainElementNode,
+  ComponentNode,
+  TemplateNode,
+  ElementNode
 } from '../ast'
 import { TransformContext } from '../transform'
-import { APPLY_DIRECTIVES } from '../runtimeConstants'
-import { PropsExpression } from './transformElement'
+import { APPLY_DIRECTIVES } from '../runtimeHelpers'
 import { PatchFlags } from '@vue/shared'
+import { isSlotOutlet, findProp } from '../utils'
+
+function hasDynamicKey(node: ElementNode) {
+  const keyProp = findProp(node, 'key')
+  return keyProp && keyProp.type === NodeTypes.DIRECTIVE
+}
 
 export function hoistStatic(root: RootNode, context: TransformContext) {
-  walk(root.children, context, new Map<TemplateChildNode, boolean>())
+  walk(
+    root.children,
+    context,
+    new Map(),
+    isSingleElementRoot(root, root.children[0])
+  )
+}
+
+export function isSingleElementRoot(
+  root: RootNode,
+  child: TemplateChildNode
+): child is PlainElementNode | ComponentNode | TemplateNode {
+  const { children } = root
+  return (
+    children.length === 1 &&
+    child.type === NodeTypes.ELEMENT &&
+    !isSlotOutlet(child)
+  )
 }
 
 function walk(
   children: TemplateChildNode[],
   context: TransformContext,
-  resultCache: Map<TemplateChildNode, boolean>
+  resultCache: Map<TemplateChildNode, boolean>,
+  doNotHoistNode: boolean = false
 ) {
   for (let i = 0; i < children.length; i++) {
     const child = children[i]
@@ -27,7 +53,11 @@ function walk(
       child.type === NodeTypes.ELEMENT &&
       child.tagType === ElementTypes.ELEMENT
     ) {
-      if (isStaticNode(child, resultCache)) {
+      if (
+        !doNotHoistNode &&
+        isStaticNode(child, resultCache) &&
+        !hasDynamicKey(child)
+      ) {
         // whole tree is static
         child.codegenNode = context.hoist(child.codegenNode!)
         continue
@@ -36,40 +66,41 @@ function walk(
         // hoisting.
         const flag = getPatchFlag(child)
         if (
-          !flag ||
-          flag === PatchFlags.NEED_PATCH ||
-          flag === PatchFlags.TEXT
+          (!flag ||
+            flag === PatchFlags.NEED_PATCH ||
+            flag === PatchFlags.TEXT) &&
+          !hasDynamicKey(child)
         ) {
-          let codegenNode = child.codegenNode as CallExpression
-          if (codegenNode.callee.includes(APPLY_DIRECTIVES)) {
-            codegenNode = codegenNode.arguments[0] as CallExpression
+          let codegenNode = child.codegenNode as ElementCodegenNode
+          if (codegenNode.callee === APPLY_DIRECTIVES) {
+            codegenNode = codegenNode.arguments[0]
           }
-          const props = codegenNode.arguments[1] as
-            | PropsExpression
-            | `null`
-            | undefined
+          const props = codegenNode.arguments[1]
           if (props && props !== `null`) {
-            ;(child.codegenNode as CallExpression).arguments[1] = context.hoist(
-              props
-            )
+            codegenNode.arguments[1] = context.hoist(props)
           }
         }
       }
     }
-    if (child.type === NodeTypes.ELEMENT || child.type === NodeTypes.FOR) {
+    if (child.type === NodeTypes.ELEMENT) {
       walk(child.children, context, resultCache)
+    } else if (child.type === NodeTypes.FOR) {
+      // Do not hoist v-for single child because it has to be a block
+      walk(child.children, context, resultCache, child.children.length === 1)
     } else if (child.type === NodeTypes.IF) {
       for (let i = 0; i < child.branches.length; i++) {
-        walk(child.branches[i].children, context, resultCache)
+        const branchChildren = child.branches[i].children
+        // Do not hoist v-if single child because it has to be a block
+        walk(branchChildren, context, resultCache, branchChildren.length === 1)
       }
     }
   }
 }
 
-function getPatchFlag(node: ElementNode): number | undefined {
-  let codegenNode = node.codegenNode as CallExpression
-  if (codegenNode.callee.includes(APPLY_DIRECTIVES)) {
-    codegenNode = codegenNode.arguments[0] as CallExpression
+function getPatchFlag(node: PlainElementNode): number | undefined {
+  let codegenNode = node.codegenNode as ElementCodegenNode
+  if (codegenNode.callee === APPLY_DIRECTIVES) {
+    codegenNode = codegenNode.arguments[0]
   }
   const flag = codegenNode.arguments[3]
   return flag ? parseInt(flag as string, 10) : undefined

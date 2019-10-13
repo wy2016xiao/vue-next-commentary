@@ -10,13 +10,24 @@ import {
   createSimpleExpression,
   JSChildNode,
   SimpleExpressionNode,
-  ElementTypes
+  ElementTypes,
+  ElementCodegenNode,
+  ComponentCodegenNode,
+  createCallExpression
 } from './ast'
 import { isString, isArray } from '@vue/shared'
 import { CompilerError, defaultOnError } from './errors'
-import { TO_STRING, COMMENT, CREATE_VNODE, FRAGMENT } from './runtimeConstants'
-import { isVSlot, createBlockExpression, isSlotOutlet } from './utils'
-import { hoistStatic } from './transforms/hoistStatic'
+import {
+  TO_STRING,
+  COMMENT,
+  CREATE_VNODE,
+  FRAGMENT,
+  helperNameMap,
+  APPLY_DIRECTIVES,
+  CREATE_BLOCK
+} from './runtimeHelpers'
+import { isVSlot, createBlockExpression } from './utils'
+import { hoistStatic, isSingleElementRoot } from './transforms/hoistStatic'
 
 // There are two types of transforms:
 //
@@ -33,10 +44,11 @@ export type NodeTransform = (
 //   It translates the raw directive into actual props for the VNode.
 export type DirectiveTransform = (
   dir: DirectiveNode,
+  node: ElementNode,
   context: TransformContext
 ) => {
-  props: Property | Property[]
-  needRuntime: boolean
+  props: Property[]
+  needRuntime: boolean | symbol
 }
 
 // A structural directive transform is a technically a NodeTransform;
@@ -57,8 +69,9 @@ export interface TransformOptions {
 
 export interface TransformContext extends Required<TransformOptions> {
   root: RootNode
-  imports: Set<string>
-  statements: Set<string>
+  helpers: Set<symbol>
+  components: Set<string>
+  directives: Set<string>
   hoists: JSChildNode[]
   identifiers: { [name: string]: number | undefined }
   scopes: {
@@ -70,7 +83,8 @@ export interface TransformContext extends Required<TransformOptions> {
   parent: ParentNode | null
   childIndex: number
   currentNode: RootNode | TemplateChildNode | null
-  helper(name: string): string
+  helper<T extends symbol>(name: T): T
+  helperString(name: symbol): string
   replaceNode(node: TemplateChildNode): void
   removeNode(node?: TemplateChildNode): void
   onNodeRemoved: () => void
@@ -91,8 +105,9 @@ function createTransformContext(
 ): TransformContext {
   const context: TransformContext = {
     root,
-    imports: new Set(),
-    statements: new Set(),
+    helpers: new Set(),
+    components: new Set(),
+    directives: new Set(),
     hoists: [],
     identifiers: {},
     scopes: {
@@ -110,8 +125,14 @@ function createTransformContext(
     currentNode: root,
     childIndex: 0,
     helper(name) {
-      context.imports.add(name)
-      return prefixIdentifiers ? name : `_${name}`
+      context.helpers.add(name)
+      return name
+    },
+    helperString(name) {
+      return (
+        (context.prefixIdentifiers ? `` : `_`) +
+        helperNameMap[context.helper(name)]
+      )
     },
     replaceNode(node) {
       /* istanbul ignore if */
@@ -131,7 +152,7 @@ function createTransformContext(
       }
       const list = context.parent!.children
       const removalIndex = node
-        ? list.indexOf(node as any)
+        ? list.indexOf(node)
         : context.currentNode
           ? context.childIndex
           : -1
@@ -213,37 +234,44 @@ export function transform(root: RootNode, options: TransformOptions) {
 function finalizeRoot(root: RootNode, context: TransformContext) {
   const { helper } = context
   const { children } = root
+  const child = children[0]
   if (children.length === 1) {
-    const child = children[0]
-    if (
-      child.type === NodeTypes.ELEMENT &&
-      !isSlotOutlet(child) &&
-      child.codegenNode &&
-      child.codegenNode.type === NodeTypes.JS_CALL_EXPRESSION
-    ) {
-      // turn root element into a block
-      root.codegenNode = createBlockExpression(
-        child.codegenNode!.arguments,
-        context
-      )
+    // if the single child is an element, turn it into a block.
+    if (isSingleElementRoot(root, child) && child.codegenNode) {
+      // single element root is never hoisted so codegenNode will never be
+      // SimpleExpressionNode
+      const codegenNode = child.codegenNode as
+        | ElementCodegenNode
+        | ComponentCodegenNode
+      if (codegenNode.callee === APPLY_DIRECTIVES) {
+        codegenNode.arguments[0].callee = helper(CREATE_BLOCK)
+      } else {
+        codegenNode.callee = helper(CREATE_BLOCK)
+      }
+      root.codegenNode = createBlockExpression(codegenNode, context)
     } else {
       // - single <slot/>, IfNode, ForNode: already blocks.
       // - single text node: always patched.
-      // - transform calls without transformElement (only during tests)
-      // Just generate the node as-is
+      // root codegen falls through via genNode()
       root.codegenNode = child
     }
   } else if (children.length > 1) {
     // root has multiple nodes - return a fragment block.
     root.codegenNode = createBlockExpression(
-      [helper(FRAGMENT), `null`, root.children],
+      createCallExpression(helper(CREATE_BLOCK), [
+        helper(FRAGMENT),
+        `null`,
+        root.children
+      ]),
       context
     )
+  } else {
+    // no children = noop. codegen will return null.
   }
-
   // finalize meta information
-  root.imports = [...context.imports]
-  root.statements = [...context.statements]
+  root.helpers = [...context.helpers]
+  root.components = [...context.components]
+  root.directives = [...context.directives]
   root.hoists = context.hoists
 }
 
@@ -317,7 +345,8 @@ export function traverseNode(
   }
 
   // exit transforms
-  for (let i = 0; i < exitFns.length; i++) {
+  let i = exitFns.length
+  while (i--) {
     exitFns[i]()
   }
 }

@@ -63,6 +63,13 @@ describe('reactivity/ref', () => {
     expect(dummy3).toBe(3)
   })
 
+  it('should unwrap nested ref in types', () => {
+    const a = ref(0)
+    const b = ref(a)
+
+    expect(typeof (b.value + 1)).toBe('number')
+  })
+
   it('should unwrap nested values in types', () => {
     const a = {
       b: ref(0)
@@ -78,6 +85,7 @@ describe('reactivity/ref', () => {
     expect(isRef(computed(() => 1))).toBe(true)
 
     expect(isRef(0)).toBe(false)
+    expect(isRef(1)).toBe(false)
     // an object that looks like a ref isn't necessarily a ref
     expect(isRef({ value: 0 })).toBe(false)
   })
