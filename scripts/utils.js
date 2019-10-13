@@ -20,9 +20,9 @@ const targets = (exports.targets = fs.readdirSync('packages').filter(f => {
 
 /**
  * 模糊匹配package
- * @param partialTargets 一个正则数组，为满足要求的包名列表
- * @param includeAllMatching 是否将所有包名都返回
- * @returns [] 返回符合要求的包名
+ * @param {string[]} partialTargets - 一个正则数组，为满足要求的包名列表
+ * @param {boolean} [includeAllMatching] - 是否将所有包名都返回
+ * @returns 返回符合要求的包名
  */
 exports.fuzzyMatchTarget = (partialTargets, includeAllMatching) => {
   const matched = []
