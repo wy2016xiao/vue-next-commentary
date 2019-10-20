@@ -130,6 +130,11 @@ export type RootRenderFunction<HostNode, HostElement> = (
  * host environment. For example, for runtime-dom, HostNode would be the DOM
  * `Node` interface and HostElement would be the DOM `Element` interface.
  *
+ * createRenderer方法接收两个参数：
+ * HostNode 和 HostElement
+ * 是宿主环境中的Node和Element类型。
+ * 比如在runtime-dom中，HostNode是DOM节点Node，HostElement是DOM元素
+ *
  * Custom renderers can pass in the platform specific types like this:
  *
  * ``` js

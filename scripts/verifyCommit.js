@@ -1,5 +1,5 @@
 // Invoked on the commit-msg git hook by yorkie.
-
+// 验证commit massage
 const chalk = require('chalk')
 const msgPath = process.env.GIT_PARAMS
 const msg = require('fs')
