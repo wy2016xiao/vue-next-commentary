@@ -1,3 +1,4 @@
+import { CodegenOptions } from './options'
 import {
   RootNode,
   TemplateChildNode,
@@ -16,7 +17,8 @@ import {
   SimpleExpressionNode,
   FunctionExpression,
   SequenceExpression,
-  ConditionalExpression
+  ConditionalExpression,
+  CacheExpression
 } from './ast'
 import { SourceMapGenerator, RawSourceMap } from 'source-map'
 import {
@@ -28,36 +30,18 @@ import {
 } from './utils'
 import { isString, isArray, isSymbol } from '@vue/shared'
 import {
+  helperNameMap,
   TO_STRING,
   CREATE_VNODE,
-  COMMENT,
-  helperNameMap,
   RESOLVE_COMPONENT,
-  RESOLVE_DIRECTIVE
+  RESOLVE_DIRECTIVE,
+  SET_BLOCK_TRACKING,
+  CREATE_COMMENT,
+  CREATE_TEXT
 } from './runtimeHelpers'
+import { ImportItem } from './transform'
 
 type CodegenNode = TemplateChildNode | JSChildNode
-
-export interface CodegenOptions {
-  // - Module mode will generate ES module import statements for helpers
-  //   and export the render function as the default export.
-  // - Function mode will generate a single `const { helpers... } = Vue`
-  //   statement and return the render function. It is meant to be used with
-  //   `new Function(code)()` to generate a render function at runtime.
-  // Default: 'function'
-  mode?: 'module' | 'function'
-  // Prefix suitable identifiers with _ctx.
-  // If this option is false, the generated code will be wrapped in a
-  // `with (this) { ... }` block.
-  // Default: false
-  prefixIdentifiers?: boolean
-  // Generate source map?
-  // Default: false
-  sourceMap?: boolean
-  // Filename for source map generation.
-  // Default: `template.vue.html`
-  filename?: string
-}
 
 export interface CodegenResult {
   code: string
@@ -210,10 +194,11 @@ export function generate(
         // has check cost, but hoists are lifted out of the function - we need
         // to provide the helper here.
         if (ast.hoists.length) {
-          push(`const _${helperNameMap[CREATE_VNODE]} = Vue.createVNode\n`)
-          if (ast.helpers.includes(COMMENT)) {
-            push(`const _${helperNameMap[COMMENT]} = Vue.Comment\n`)
-          }
+          const staticHelpers = [CREATE_VNODE, CREATE_COMMENT, CREATE_TEXT]
+            .filter(helper => ast.helpers.includes(helper))
+            .map(s => `${helperNameMap[s]}: _${helperNameMap[s]}`)
+            .join(', ')
+          push(`const { ${staticHelpers} } = Vue\n`)
         }
       }
     }
@@ -224,6 +209,10 @@ export function generate(
     // generate import statements for helpers
     if (hasHelpers) {
       push(`import { ${ast.helpers.map(helper).join(', ')} } from "vue"\n`)
+    }
+    if (ast.imports.length) {
+      genImports(ast.imports, context)
+      newline()
     }
     genHoists(ast.hoists, context)
     newline()
@@ -246,10 +235,18 @@ export function generate(
           .join(', ')} } = _Vue`
       )
       newline()
+      if (ast.cached > 0) {
+        push(`const _cache = $cache`)
+        newline()
+      }
       newline()
     }
   } else {
     push(`const _ctx = this`)
+    if (ast.cached > 0) {
+      newline()
+      push(`const _cache = _ctx.$cache`)
+    }
     newline()
   }
 
@@ -311,6 +308,18 @@ function genHoists(hoists: JSChildNode[], context: CodegenContext) {
   hoists.forEach((exp, i) => {
     context.push(`const _hoisted_${i + 1} = `)
     genNode(exp, context)
+    context.newline()
+  })
+}
+
+function genImports(importsOptions: ImportItem[], context: CodegenContext) {
+  if (!importsOptions.length) {
+    return
+  }
+  importsOptions.forEach(imports => {
+    context.push(`import `)
+    genNode(imports.exp, context)
+    context.push(` from '${imports.path}'`)
     context.newline()
   })
 }
@@ -395,6 +404,9 @@ function genNode(node: CodegenNode | symbol | string, context: CodegenContext) {
     case NodeTypes.INTERPOLATION:
       genInterpolation(node, context)
       break
+    case NodeTypes.TEXT_CALL:
+      genNode(node.codegenNode, context)
+      break
     case NodeTypes.COMPOUND_EXPRESSION:
       genCompoundExpression(node, context)
       break
@@ -418,6 +430,9 @@ function genNode(node: CodegenNode | symbol | string, context: CodegenContext) {
       break
     case NodeTypes.JS_CONDITIONAL_EXPRESSION:
       genConditionalExpression(node, context)
+      break
+    case NodeTypes.JS_CACHE_EXPRESSION:
+      genCacheExpression(node, context)
       break
     /* istanbul ignore next */
     default:
@@ -486,12 +501,7 @@ function genExpressionAsPropertyKey(
 function genComment(node: CommentNode, context: CodegenContext) {
   if (__DEV__) {
     const { push, helper } = context
-    push(
-      `${helper(CREATE_VNODE)}(${helper(COMMENT)}, null, ${JSON.stringify(
-        node.content
-      )})`,
-      node
-    )
+    push(`${helper(CREATE_COMMENT)}(${JSON.stringify(node.content)})`, node)
   }
 }
 
@@ -533,8 +543,7 @@ function genObjectExpression(node: ObjectExpression, context: CodegenContext) {
     }
   }
   multilines && deindent()
-  const lastChar = context.code[context.code.length - 1]
-  push(multilines || /[\])}]/.test(lastChar) ? `}` : ` }`)
+  push(multilines ? `}` : ` }`)
 }
 
 function genArrayExpression(node: ArrayExpression, context: CodegenContext) {
@@ -611,4 +620,25 @@ function genSequenceExpression(
   context.push(`(`)
   genNodeList(node.expressions, context)
   context.push(`)`)
+}
+
+function genCacheExpression(node: CacheExpression, context: CodegenContext) {
+  const { push, helper, indent, deindent, newline } = context
+  push(`_cache[${node.index}] || (`)
+  if (node.isVNode) {
+    indent()
+    push(`${helper(SET_BLOCK_TRACKING)}(-1),`)
+    newline()
+  }
+  push(`_cache[${node.index}] = `)
+  genNode(node.value, context)
+  if (node.isVNode) {
+    push(`,`)
+    newline()
+    push(`${helper(SET_BLOCK_TRACKING)}(1),`)
+    newline()
+    push(`_cache[${node.index}]`)
+    deindent()
+  }
+  push(`)`)
 }

@@ -5,18 +5,30 @@ import {
   ElementNode,
   ObjectExpression,
   CompilerOptions,
-  CallExpression
+  CallExpression,
+  ForNode,
+  PlainElementNode,
+  PlainElementCodegenNode,
+  ComponentNode,
+  NodeTypes
 } from '../../src'
 import { ErrorCodes } from '../../src/errors'
 import { transformModel } from '../../src/transforms/vModel'
 import { transformElement } from '../../src/transforms/transformElement'
 import { transformExpression } from '../../src/transforms/transformExpression'
+import { transformFor } from '../../src/transforms/vFor'
+import { trackSlotScopes } from '../../src/transforms/vSlot'
 
 function parseWithVModel(template: string, options: CompilerOptions = {}) {
   const ast = parse(template)
 
   transform(ast, {
-    nodeTransforms: [transformExpression, transformElement],
+    nodeTransforms: [
+      transformFor,
+      transformExpression,
+      transformElement,
+      trackSlotScopes
+    ],
     directiveTransforms: {
       ...options.directiveTransforms,
       model: transformModel
@@ -253,11 +265,7 @@ describe('compiler: transform v-model', () => {
     expect(props[1]).toMatchObject({
       key: {
         children: [
-          {
-            content: 'onUpdate:',
-            isStatic: true
-          },
-          '+',
+          '"onUpdate:" + ',
           {
             content: 'value',
             isStatic: false
@@ -301,11 +309,7 @@ describe('compiler: transform v-model', () => {
     expect(props[1]).toMatchObject({
       key: {
         children: [
-          {
-            content: 'onUpdate:',
-            isStatic: true
-          },
-          '+',
+          '"onUpdate:" + ',
           {
             content: '_ctx.value',
             isStatic: false
@@ -325,6 +329,103 @@ describe('compiler: transform v-model', () => {
     })
 
     expect(generate(root, { mode: 'module' }).code).toMatchSnapshot()
+  })
+
+  test('should cache update handler w/ cacheHandlers: true', () => {
+    const root = parseWithVModel('<input v-model="foo" />', {
+      prefixIdentifiers: true,
+      cacheHandlers: true
+    })
+    expect(root.cached).toBe(1)
+    const codegen = (root.children[0] as PlainElementNode)
+      .codegenNode as PlainElementCodegenNode
+    // should not list cached prop in dynamicProps
+    expect(codegen.arguments[4]).toBe(`["modelValue"]`)
+    expect(
+      (codegen.arguments[1] as ObjectExpression).properties[1].value.type
+    ).toBe(NodeTypes.JS_CACHE_EXPRESSION)
+  })
+
+  test('should not cache update handler if it refers v-for scope variables', () => {
+    const root = parseWithVModel(
+      '<input v-for="i in list" v-model="foo[i]" />',
+      {
+        prefixIdentifiers: true,
+        cacheHandlers: true
+      }
+    )
+    expect(root.cached).toBe(0)
+    const codegen = ((root.children[0] as ForNode)
+      .children[0] as PlainElementNode).codegenNode as PlainElementCodegenNode
+    expect(codegen.arguments[4]).toBe(`["modelValue", "onUpdate:modelValue"]`)
+    expect(
+      (codegen.arguments[1] as ObjectExpression).properties[1].value.type
+    ).not.toBe(NodeTypes.JS_CACHE_EXPRESSION)
+  })
+
+  test('should mark update handler dynamic if it refers slot scope variables', () => {
+    const root = parseWithVModel(
+      '<Comp v-slot="{ foo }"><input v-model="foo.bar"/></Comp>',
+      {
+        prefixIdentifiers: true
+      }
+    )
+    const codegen = ((root.children[0] as ComponentNode)
+      .children[0] as PlainElementNode).codegenNode as PlainElementCodegenNode
+    expect(codegen.arguments[4]).toBe(`["modelValue", "onUpdate:modelValue"]`)
+  })
+
+  test('should generate modelModifers for component v-model', () => {
+    const root = parseWithVModel('<Comp v-model.trim.bar-baz="foo" />', {
+      prefixIdentifiers: true
+    })
+    const args = ((root.children[0] as ComponentNode)
+      .codegenNode as CallExpression).arguments
+    // props
+    expect(args[1]).toMatchObject({
+      properties: [
+        { key: { content: `modelValue` } },
+        { key: { content: `onUpdate:modelValue` } },
+        {
+          key: { content: 'modelModifiers' },
+          value: { content: `{ trim: true, "bar-baz": true }`, isStatic: false }
+        }
+      ]
+    })
+    // should NOT include modelModifiers in dynamicPropNames because it's never
+    // gonna change
+    expect(args[4]).toBe(`["modelValue", "onUpdate:modelValue"]`)
+  })
+
+  test('should generate modelModifers for component v-model with arguments', () => {
+    const root = parseWithVModel(
+      '<Comp v-model:foo.trim="foo" v-model:bar.number="bar" />',
+      {
+        prefixIdentifiers: true
+      }
+    )
+    const args = ((root.children[0] as ComponentNode)
+      .codegenNode as CallExpression).arguments
+    // props
+    expect(args[1]).toMatchObject({
+      properties: [
+        { key: { content: `foo` } },
+        { key: { content: `onUpdate:foo` } },
+        {
+          key: { content: 'fooModifiers' },
+          value: { content: `{ trim: true }`, isStatic: false }
+        },
+        { key: { content: `bar` } },
+        { key: { content: `onUpdate:bar` } },
+        {
+          key: { content: 'barModifiers' },
+          value: { content: `{ number: true }`, isStatic: false }
+        }
+      ]
+    })
+    // should NOT include modelModifiers in dynamicPropNames because it's never
+    // gonna change
+    expect(args[4]).toBe(`["foo", "onUpdate:foo", "bar", "onUpdate:bar"]`)
   })
 
   describe('errors', () => {
@@ -360,6 +461,21 @@ describe('compiler: transform v-model', () => {
       expect(onError).toHaveBeenCalledWith(
         expect.objectContaining({
           code: ErrorCodes.X_V_MODEL_MALFORMED_EXPRESSION
+        })
+      )
+    })
+
+    test('used on scope variable', () => {
+      const onError = jest.fn()
+      parseWithVModel('<span v-for="i in list" v-model="i" />', {
+        onError,
+        prefixIdentifiers: true
+      })
+
+      expect(onError).toHaveBeenCalledTimes(1)
+      expect(onError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          code: ErrorCodes.X_V_MODEL_ON_SCOPE_VARIABLE
         })
       )
     })

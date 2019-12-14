@@ -23,9 +23,9 @@ import {
   FRAGMENT,
   RENDER_LIST,
   RENDER_SLOT,
-  APPLY_DIRECTIVES
+  WITH_DIRECTIVES
 } from '../../src/runtimeHelpers'
-import { PatchFlags } from '@vue/runtime-dom'
+import { PatchFlags } from '@vue/shared'
 import { createObjectMatcher, genFlagText } from '../testUtils'
 
 function parseWithForTransform(
@@ -704,7 +704,8 @@ describe('compiler: v-for', () => {
           [
             { type: NodeTypes.TEXT, content: `hello` },
             { type: NodeTypes.ELEMENT, tag: `span` }
-          ]
+          ],
+          genFlagText(PatchFlags.STABLE_FRAGMENT)
         ]
       })
       expect(generate(root).code).toMatchSnapshot()
@@ -784,7 +785,8 @@ describe('compiler: v-for', () => {
           [
             { type: NodeTypes.TEXT, content: `hello` },
             { type: NodeTypes.ELEMENT, tag: `span` }
-          ]
+          ],
+          genFlagText(PatchFlags.STABLE_FRAGMENT)
         ]
       })
       expect(generate(root).code).toMatchSnapshot()
@@ -857,9 +859,9 @@ describe('compiler: v-for', () => {
         type: NodeTypes.JS_SEQUENCE_EXPRESSION,
         expressions: [
           { callee: OPEN_BLOCK },
-          // should wrap applyDirectives() around createBlock()
+          // should wrap withDirectives() around createBlock()
           {
-            callee: APPLY_DIRECTIVES,
+            callee: WITH_DIRECTIVES,
             arguments: [
               { callee: CREATE_BLOCK },
               { type: NodeTypes.JS_ARRAY_EXPRESSION }

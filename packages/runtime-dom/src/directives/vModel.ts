@@ -1,6 +1,11 @@
-import { Directive, VNode, DirectiveBinding, warn } from '@vue/runtime-core'
+import {
+  ObjectDirective,
+  VNode,
+  DirectiveBinding,
+  warn
+} from '@vue/runtime-core'
 import { addEventListener } from '../modules/events'
-import { looseEqual, isArray } from '@vue/shared'
+import { isArray, isObject } from '@vue/shared'
 
 const getModelAssigner = (vnode: VNode): ((value: any) => void) =>
   vnode.props!['onUpdate:modelValue']
@@ -30,7 +35,9 @@ function toNumber(val: string): number | string {
 
 // We are exporting the v-model runtime directly as vnode hooks so that it can
 // be tree-shaken in case v-model is never used.
-export const vModelText: Directive<HTMLInputElement | HTMLTextAreaElement> = {
+export const vModelText: ObjectDirective<
+  HTMLInputElement | HTMLTextAreaElement
+> = {
   beforeMount(el, { value, modifiers: { lazy, trim, number } }, vnode) {
     el.value = value
     const assign = getModelAssigner(vnode)
@@ -59,7 +66,10 @@ export const vModelText: Directive<HTMLInputElement | HTMLTextAreaElement> = {
       addEventListener(el, 'change', onCompositionEnd)
     }
   },
-  beforeUpdate(el, { value, modifiers: { trim, number } }) {
+  beforeUpdate(el, { value, oldValue, modifiers: { trim, number } }) {
+    if (value === oldValue) {
+      return
+    }
     if (document.activeElement === el) {
       if (trim && el.value.trim() === value) {
         return
@@ -72,22 +82,26 @@ export const vModelText: Directive<HTMLInputElement | HTMLTextAreaElement> = {
   }
 }
 
-export const vModelCheckbox: Directive<HTMLInputElement> = {
+export const vModelCheckbox: ObjectDirective<HTMLInputElement> = {
   beforeMount(el, binding, vnode) {
     setChecked(el, binding, vnode)
     const assign = getModelAssigner(vnode)
     addEventListener(el, 'change', () => {
       const modelValue = (el as any)._modelValue
       const elementValue = getValue(el)
+      const checked = el.checked
       if (isArray(modelValue)) {
-        const i = looseIndexOf(modelValue, elementValue)
-        if (i > -1) {
-          assign([...modelValue.slice(0, i), ...modelValue.slice(i + 1)])
-        } else {
+        const index = looseIndexOf(modelValue, elementValue)
+        const found = index !== -1
+        if (checked && !found) {
           assign(modelValue.concat(elementValue))
+        } else if (!checked && found) {
+          const filtered = [...modelValue]
+          filtered.splice(index, 1)
+          assign(filtered)
         }
       } else {
-        assign(el.checked)
+        assign(getCheckboxValue(el, checked))
       }
     })
   },
@@ -96,18 +110,20 @@ export const vModelCheckbox: Directive<HTMLInputElement> = {
 
 function setChecked(
   el: HTMLInputElement,
-  { value }: DirectiveBinding,
+  { value, oldValue }: DirectiveBinding,
   vnode: VNode
 ) {
   // store the v-model value on the element so it can be accessed by the
   // change listener.
   ;(el as any)._modelValue = value
-  el.checked = isArray(value)
-    ? looseIndexOf(value, vnode.props!.value) > -1
-    : !!value
+  if (isArray(value)) {
+    el.checked = looseIndexOf(value, vnode.props!.value) > -1
+  } else if (value !== oldValue) {
+    el.checked = looseEqual(value, getCheckboxValue(el, true))
+  }
 }
 
-export const vModelRadio: Directive<HTMLInputElement> = {
+export const vModelRadio: ObjectDirective<HTMLInputElement> = {
   beforeMount(el, { value }, vnode) {
     el.checked = looseEqual(value, vnode.props!.value)
     const assign = getModelAssigner(vnode)
@@ -115,12 +131,14 @@ export const vModelRadio: Directive<HTMLInputElement> = {
       assign(getValue(el))
     })
   },
-  beforeUpdate(el, { value }, vnode) {
-    el.checked = looseEqual(value, vnode.props!.value)
+  beforeUpdate(el, { value, oldValue }, vnode) {
+    if (value !== oldValue) {
+      el.checked = looseEqual(value, vnode.props!.value)
+    }
   }
 }
 
-export const vModelSelect: Directive<HTMLSelectElement> = {
+export const vModelSelect: ObjectDirective<HTMLSelectElement> = {
   // use mounted & updated because <select> relies on its children <option>s.
   mounted(el, { value }, vnode) {
     setSelected(el, value)
@@ -164,6 +182,43 @@ function setSelected(el: HTMLSelectElement, value: any) {
   }
 }
 
+function looseEqual(a: any, b: any): boolean {
+  if (a === b) return true
+  const isObjectA = isObject(a)
+  const isObjectB = isObject(b)
+  if (isObjectA && isObjectB) {
+    try {
+      const isArrayA = isArray(a)
+      const isArrayB = isArray(b)
+      if (isArrayA && isArrayB) {
+        return (
+          a.length === b.length &&
+          a.every((e: any, i: any) => looseEqual(e, b[i]))
+        )
+      } else if (a instanceof Date && b instanceof Date) {
+        return a.getTime() === b.getTime()
+      } else if (!isArrayA && !isArrayB) {
+        const keysA = Object.keys(a)
+        const keysB = Object.keys(b)
+        return (
+          keysA.length === keysB.length &&
+          keysA.every(key => looseEqual(a[key], b[key]))
+        )
+      } else {
+        /* istanbul ignore next */
+        return false
+      }
+    } catch (e) {
+      /* istanbul ignore next */
+      return false
+    }
+  } else if (!isObjectA && !isObjectB) {
+    return String(a) === String(b)
+  } else {
+    return false
+  }
+}
+
 function looseIndexOf(arr: any[], val: any): number {
   return arr.findIndex(item => looseEqual(item, val))
 }
@@ -173,7 +228,16 @@ function getValue(el: HTMLOptionElement | HTMLInputElement) {
   return '_value' in el ? (el as any)._value : el.value
 }
 
-export const vModelDynamic: Directive<
+// retrieve raw value for true-value and false-value set via :true-value or :false-value bindings
+function getCheckboxValue(
+  el: HTMLInputElement & { _trueValue?: any; _falseValue?: any },
+  checked: boolean
+) {
+  const key = checked ? '_trueValue' : '_falseValue'
+  return key in el ? el[key] : checked
+}
+
+export const vModelDynamic: ObjectDirective<
   HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
 > = {
   beforeMount(el, binding, vnode) {
@@ -195,9 +259,9 @@ function callModelHook(
   binding: DirectiveBinding,
   vnode: VNode,
   prevVNode: VNode | null,
-  hook: keyof Directive
+  hook: keyof ObjectDirective
 ) {
-  let modelToUse: Directive
+  let modelToUse: ObjectDirective
   switch (el.tagName) {
     case 'SELECT':
       modelToUse = vModelSelect

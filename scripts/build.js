@@ -38,14 +38,15 @@ const formats = args.formats || args.f
 const devOnly = args.devOnly || args.d
 // 没有带devOnly参数并且带了prodOnly | p参数
 const prodOnly = !devOnly && (args.prodOnly || args.p)
-// 是不是build所有包
+const isRelease = args.release
+const buildTypes = args.t || args.types || isRelease
 const buildAllMatching = args.all || args.a
-// git rev-parse HEAD显示HEAD提交的SHA1值，取前8位
+const lean = args.lean || args.l
 const commit = execa.sync('git', ['rev-parse', 'HEAD']).stdout.slice(0, 7)
 
-// 这个写法能够在根作用域执行异步操作
-;(async () => {
-  // 打包所有还是按参数匹配打包
+run()
+
+async function run() {
   if (!targets.length) {
     // 没有命令行参数
     // 目前只有npm run build
@@ -55,7 +56,7 @@ const commit = execa.sync('git', ['rev-parse', 'HEAD']).stdout.slice(0, 7)
     await buildAll(fuzzyMatchTarget(targets, buildAllMatching))
     checkAllSizes(fuzzyMatchTarget(targets, buildAllMatching))
   }
-})()
+}
 
 /**
  * 构建所有包
@@ -76,14 +77,20 @@ async function build(target) {
   const pkgDir = path.resolve(`packages/${target}`)
   // 取配置文件
   const pkg = require(`${pkgDir}/package.json`)
-  // 删除包里的dist文件夹
-  await fs.remove(`${pkgDir}/dist`)
-  // 取当前编译模式
+
+  // only build published packages for release
+  if (isRelease && pkg.private) {
+    return
+  }
+
+  // if building a specific format, do not remove dist.
+  if (!formats) {
+    await fs.remove(`${pkgDir}/dist`)
+  }
+
   const env =
     (pkg.buildOptions && pkg.buildOptions.env) ||
     (devOnly ? 'development' : 'production')
-
-  // 开始打包
   await execa(
     'rollup',
     [
@@ -94,8 +101,9 @@ async function build(target) {
         `NODE_ENV:${env}`,
         `TARGET:${target}`,
         formats ? `FORMATS:${formats}` : ``,
-        args.types ? `TYPES:true` : ``,
-        prodOnly ? `PROD_ONLY:true` : ``
+        buildTypes ? `TYPES:true` : ``,
+        prodOnly ? `PROD_ONLY:true` : ``,
+        lean ? `LEAN:true` : ``
       ]
         .filter(Boolean)
         .join(',')
@@ -103,9 +111,7 @@ async function build(target) {
     { stdio: 'inherit' }
   )
 
-  // 以下步骤开始导出api文档
-  // 配置文件或者参数里面带了types
-  if (args.types && pkg.types) {
+  if (buildTypes && pkg.types) {
     console.log()
     console.log(
       chalk.bold(chalk.yellow(`Rolling up type definitions for ${target}...`))
@@ -126,6 +132,17 @@ async function build(target) {
     })
 
     if (result.succeeded) {
+      // concat additional d.ts to rolled-up dts (mostly for JSX)
+      if (pkg.buildOptions && pkg.buildOptions.dts) {
+        const dtsPath = path.resolve(pkgDir, pkg.types)
+        const existing = await fs.readFile(dtsPath, 'utf-8')
+        const toAdd = await Promise.all(
+          pkg.buildOptions.dts.map(file => {
+            return fs.readFile(path.resolve(pkgDir, file), 'utf-8')
+          })
+        )
+        await fs.writeFile(dtsPath, existing + '\n' + toAdd.join('\n'))
+      }
       console.log(
         chalk.bold(chalk.green(`API Extractor completed successfully.`))
       )
@@ -143,6 +160,9 @@ async function build(target) {
 
 // 逐个检查所有包大小
 function checkAllSizes(targets) {
+  if (devOnly) {
+    return
+  }
   console.log()
   for (const target of targets) {
     checkSize(target)
@@ -153,7 +173,7 @@ function checkAllSizes(targets) {
 // 判断单个包大小
 function checkSize(target) {
   const pkgDir = path.resolve(`packages/${target}`)
-  const esmProdBuild = `${pkgDir}/dist/${target}.esm-browser.prod.js`
+  const esmProdBuild = `${pkgDir}/dist/${target}.global.prod.js`
   if (fs.existsSync(esmProdBuild)) {
     const file = fs.readFileSync(esmProdBuild)
     const minSize = (file.length / 1024).toFixed(2) + 'kb'

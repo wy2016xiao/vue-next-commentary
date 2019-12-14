@@ -41,22 +41,25 @@ export const enum PatchFlags {
   FULL_PROPS = 1 << 4,
 
   // Indicates an element that only needs non-props patching, e.g. ref or
-  // directives (vnodeXXX hooks). It simply marks the vnode as "need patch",
-  // since every patched vnode checks for refs and vnodeXXX hooks.
+  // directives (onVnodeXXX hooks). It simply marks the vnode as "need patch",
+  // since every patched vnode checks for refs and onVnodeXXX hooks.
   // This flag is never directly matched against, it simply serves as a non-zero
   // value.
   NEED_PATCH = 1 << 5,
 
+  // Indicates a fragment whose children order doesn't change.
+  STABLE_FRAGMENT = 1 << 6,
+
   // Indicates a fragment with keyed or partially keyed children
-  KEYED_FRAGMENT = 1 << 6,
+  KEYED_FRAGMENT = 1 << 7,
 
   // Indicates a fragment with unkeyed children.
-  UNKEYED_FRAGMENT = 1 << 7,
+  UNKEYED_FRAGMENT = 1 << 8,
 
   // Indicates a component with dynamic slots (e.g. slot that references a v-for
   // iterated value, or dynamic slot names).
   // Components with this flag are always force updated.
-  DYNAMIC_SLOTS = 1 << 8,
+  DYNAMIC_SLOTS = 1 << 9,
 
   // A special flag that indicates that the diffing algorithm should bail out
   // of optimized mode. This is only on block fragments created by renderSlot()
@@ -87,6 +90,7 @@ export const PatchFlagNames = {
   [PatchFlags.PROPS]: `PROPS`,
   [PatchFlags.NEED_PATCH]: `NEED_PATCH`,
   [PatchFlags.FULL_PROPS]: `FULL_PROPS`,
+  [PatchFlags.STABLE_FRAGMENT]: `STABLE_FRAGMENT`,
   [PatchFlags.KEYED_FRAGMENT]: `KEYED_FRAGMENT`,
   [PatchFlags.UNKEYED_FRAGMENT]: `UNKEYED_FRAGMENT`,
   [PatchFlags.DYNAMIC_SLOTS]: `DYNAMIC_SLOTS`,

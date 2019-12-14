@@ -1,14 +1,14 @@
-const fs = require('fs')
-const path = require('path')
-const ts = require('rollup-plugin-typescript2')
-const replace = require('rollup-plugin-replace')
-const alias = require('rollup-plugin-alias')
-const json = require('rollup-plugin-json')
+import fs from 'fs'
+import path from 'path'
+import ts from 'rollup-plugin-typescript2'
+import replace from '@rollup/plugin-replace'
+import json from '@rollup/plugin-json'
 
 if (!process.env.TARGET) {
   throw new Error('TARGET package must be specified via --environment flag.')
 }
 
+const masterVersion = require('./package.json').version
 const packagesDir = path.resolve(__dirname, 'packages')
 const packageDir = path.resolve(packagesDir, process.env.TARGET)
 const name = path.basename(packageDir)
@@ -16,23 +16,15 @@ const resolve = p => path.resolve(packageDir, p)
 const pkg = require(resolve(`package.json`))
 const packageOptions = pkg.buildOptions || {}
 
-// build aliases dynamically
-const aliasOptions = { resolve: ['.ts'] }
-fs.readdirSync(packagesDir).forEach(dir => {
-  if (dir === 'vue') {
-    return
-  }
-  if (fs.statSync(path.resolve(packagesDir, dir)).isDirectory()) {
-    aliasOptions[`@vue/${dir}`] = path.resolve(packagesDir, `${dir}/src/index`)
-  }
+const knownExternals = fs.readdirSync(packagesDir).filter(p => {
+  return p !== '@vue/shared'
 })
-const aliasPlugin = alias(aliasOptions)
 
 // ensure TS checks only once for each build
 let hasTSChecked = false
 
 const configs = {
-  esm: {
+  'esm-bundler': {
     file: resolve(`dist/${name}.esm-bundler.js`),
     format: `es`
   },
@@ -44,13 +36,13 @@ const configs = {
     file: resolve(`dist/${name}.global.js`),
     format: `iife`
   },
-  'esm-browser': {
-    file: resolve(`dist/${name}.esm-browser.js`),
+  esm: {
+    file: resolve(`dist/${name}.esm.js`),
     format: `es`
   }
 }
 
-const defaultFormats = ['esm', 'cjs']
+const defaultFormats = ['esm-bundler', 'cjs']
 const inlineFormats = process.env.FORMATS && process.env.FORMATS.split(',')
 const packageFormats = inlineFormats || packageOptions.formats || defaultFormats
 const packageConfigs = process.env.PROD_ONLY
@@ -59,23 +51,26 @@ const packageConfigs = process.env.PROD_ONLY
 
 if (process.env.NODE_ENV === 'production') {
   packageFormats.forEach(format => {
-    if (format === 'cjs') {
+    if (format === 'cjs' && packageOptions.prod !== false) {
       packageConfigs.push(createProductionConfig(format))
     }
-    if (format === 'global' || format === 'esm-browser') {
+    if (format === 'global' || format === 'esm') {
       packageConfigs.push(createMinifiedConfig(format))
     }
   })
 }
 
-module.exports = packageConfigs
+export default packageConfigs
 
 function createConfig(output, plugins = []) {
+  output.externalLiveBindings = false
+
   const isProductionBuild =
     process.env.__DEV__ === 'false' || /\.prod\.js$/.test(output.file)
   const isGlobalBuild = /\.global(\.prod)?\.js$/.test(output.file)
-  const isBundlerESMBuild = /\.esm\.js$/.test(output.file)
-  const isBrowserESMBuild = /esm-browser(\.prod)?\.js$/.test(output.file)
+  const isBundlerESMBuild = /\.esm-bundler\.js$/.test(output.file)
+  const isRawESMBuild = /esm(\.prod)?\.js$/.test(output.file)
+  const isRuntimeCompileBuild = /vue\./.test(output.file)
 
   if (isGlobalBuild) {
     output.name = packageOptions.name
@@ -95,7 +90,7 @@ function createConfig(output, plugins = []) {
         declaration: shouldEmitDeclarations,
         declarationMap: shouldEmitDeclarations
       },
-      exclude: ['**/__tests__']
+      exclude: ['**/__tests__', 'test-dts']
     }
   })
   // we only need to check TS and generate declarations once for each build.
@@ -103,24 +98,25 @@ function createConfig(output, plugins = []) {
   // during a single build.
   hasTSChecked = true
 
-  const externals = Object.keys(aliasOptions).filter(p => p !== '@vue/shared')
-
   return {
     input: resolve(`src/index.ts`),
     // Global and Browser ESM builds inlines everything so that they can be
     // used alone.
-    external: isGlobalBuild || isBrowserESMBuild ? [] : externals,
+    external:
+      isGlobalBuild || isRawESMBuild
+        ? []
+        : knownExternals.concat(Object.keys(pkg.dependencies || [])),
     plugins: [
       json({
         namedExports: false
       }),
       tsPlugin,
-      aliasPlugin,
       createReplacePlugin(
         isProductionBuild,
         isBundlerESMBuild,
-        (isGlobalBuild || isBrowserESMBuild) &&
-          !packageOptions.enableNonBrowserBranches
+        (isGlobalBuild || isRawESMBuild) &&
+          !packageOptions.enableNonBrowserBranches,
+        isRuntimeCompileBuild
       ),
       ...plugins
     ],
@@ -133,22 +129,32 @@ function createConfig(output, plugins = []) {
   }
 }
 
-function createReplacePlugin(isProduction, isBundlerESMBuild, isBrowserBuild) {
+function createReplacePlugin(
+  isProduction,
+  isBundlerESMBuild,
+  isBrowserBuild,
+  isRuntimeCompileBuild
+) {
   return replace({
     __COMMIT__: `"${process.env.COMMIT}"`,
+    __VERSION__: `"${masterVersion}"`,
     __DEV__: isBundlerESMBuild
       ? // preserve to be handled by bundlers
-        `process.env.NODE_ENV !== 'production'`
+        `(process.env.NODE_ENV !== 'production')`
       : // hard coded dev/prod builds
         !isProduction,
-    // If the build is expected to run directly in the browser (global / esm-browser builds)
+    // this is only used during tests
+    __TEST__: isBundlerESMBuild ? `(process.env.NODE_ENV === 'test')` : false,
+    // If the build is expected to run directly in the browser (global / esm builds)
     __BROWSER__: isBrowserBuild,
+    // is targeting bundlers?
+    __BUNDLER__: isBundlerESMBuild,
+    // support compile in browser?
+    __RUNTIME_COMPILE__: isRuntimeCompileBuild,
     // support options?
     // the lean build drops options related code with buildOptions.lean: true
-    __FEATURE_OPTIONS__: !packageOptions.lean,
-    __FEATURE_SUSPENSE__: true,
-    // this is only used during tests
-    __JSDOM__: false
+    __FEATURE_OPTIONS__: !packageOptions.lean && !process.env.LEAN,
+    __FEATURE_SUSPENSE__: true
   })
 }
 
