@@ -1,12 +1,18 @@
 import path from 'path'
 import {
+  ConstantTypes,
   createCompoundExpression,
   createSimpleExpression,
   NodeTransform,
   NodeTypes,
   SimpleExpressionNode
 } from '@vue/compiler-core'
-import { isRelativeUrl, parseUrl, isExternalUrl } from './templateUtils'
+import {
+  isRelativeUrl,
+  parseUrl,
+  isExternalUrl,
+  isDataUrl
+} from './templateUtils'
 import {
   AssetURLOptions,
   defaultAssetUrlOptions
@@ -51,6 +57,15 @@ export const transformSrcset: NodeTransform = (
             return { url, descriptor }
           })
 
+          // for data url need recheck url
+          for (let i = 0; i < imageCandidates.length; i++) {
+            if (imageCandidates[i].url.trim().startsWith('data:')) {
+              imageCandidates[i + 1].url =
+                imageCandidates[i].url + ',' + imageCandidates[i + 1].url
+              imageCandidates.splice(i, 1)
+            }
+          }
+
           // When srcset does not contain any relative URLs, skip transforming
           if (
             !options.includeAbsolute &&
@@ -62,7 +77,7 @@ export const transformSrcset: NodeTransform = (
           if (options.base) {
             const base = options.base
             const set: string[] = []
-            imageCandidates.forEach(({ url, descriptor }, index) => {
+            imageCandidates.forEach(({ url, descriptor }) => {
               descriptor = descriptor ? ` ${descriptor}` : ``
               if (isRelativeUrl(url)) {
                 set.push((path.posix || path).join(base, url) + descriptor)
@@ -78,6 +93,7 @@ export const transformSrcset: NodeTransform = (
           imageCandidates.forEach(({ url, descriptor }, index) => {
             if (
               !isExternalUrl(url) &&
+              !isDataUrl(url) &&
               (options.includeAbsolute || isRelativeUrl(url))
             ) {
               const { path } = parseUrl(url)
@@ -92,14 +108,14 @@ export const transformSrcset: NodeTransform = (
                     `_imports_${existingImportsIndex}`,
                     false,
                     attr.loc,
-                    true
+                    ConstantTypes.CAN_HOIST
                   )
                 } else {
                   exp = createSimpleExpression(
                     `_imports_${importsArray.length}`,
                     false,
                     attr.loc,
-                    true
+                    ConstantTypes.CAN_HOIST
                   )
                   context.imports.add({ exp, path })
                 }
@@ -110,7 +126,7 @@ export const transformSrcset: NodeTransform = (
                 `"${url}"`,
                 false,
                 attr.loc,
-                true
+                ConstantTypes.CAN_HOIST
               )
               compoundExpression.children.push(exp)
             }
@@ -125,7 +141,7 @@ export const transformSrcset: NodeTransform = (
           })
 
           const hoisted = context.hoist(compoundExpression)
-          hoisted.isRuntimeConstant = true
+          hoisted.constType = ConstantTypes.CAN_HOIST
 
           node.props[index] = {
             type: NodeTypes.DIRECTIVE,

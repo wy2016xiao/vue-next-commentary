@@ -7,7 +7,7 @@ import {
   ReactiveEffectOptions,
   isReactive
 } from '@vue/reactivity'
-import { queueJob } from './scheduler'
+import { SchedulerJob, queuePreFlushCb } from './scheduler'
 import {
   EMPTY_OBJ,
   isObject,
@@ -16,7 +16,9 @@ import {
   isString,
   hasChanged,
   NOOP,
-  remove
+  remove,
+  isMap,
+  isSet
 } from '@vue/shared'
 import {
   currentInstance,
@@ -29,7 +31,6 @@ import {
   callWithErrorHandling,
   callWithAsyncErrorHandling
 } from './errorHandling'
-import { onBeforeUnmount } from './apiLifecycle'
 import { queuePostRenderEffect } from './renderer'
 import { warn } from './warning'
 
@@ -43,14 +44,12 @@ export type WatchCallback<V = any, OV = any> = (
   onInvalidate: InvalidateCbRegistrator
 ) => any
 
-type MapSources<T> = {
-  [K in keyof T]: T[K] extends WatchSource<infer V> ? V : never
-}
-
-type MapOldSources<T, Immediate> = {
+type MapSources<T, Immediate> = {
   [K in keyof T]: T[K] extends WatchSource<infer V>
     ? Immediate extends true ? (V | undefined) : V
-    : never
+    : T[K] extends object
+      ? Immediate extends true ? (T[K] | undefined) : T[K]
+      : never
 }
 
 type InvalidateCbRegistrator = (cb: () => void) => void
@@ -68,8 +67,6 @@ export interface WatchOptions<Immediate = boolean> extends WatchOptionsBase {
 
 export type WatchStopHandle = () => void
 
-const invoke = (fn: Function) => fn()
-
 // Simple effect.
 export function watchEffect(
   effect: WatchEffect,
@@ -81,16 +78,27 @@ export function watchEffect(
 // initial value for watchers to trigger on undefined initial values
 const INITIAL_WATCHER_VALUE = {}
 
+type MultiWatchSources = (WatchSource<unknown> | object)[]
+
 // overload #1: array of multiple sources + cb
-// Readonly constraint helps the callback to correctly infer value types based
-// on position in the source array. Otherwise the values will get a union type
-// of all possible value types.
 export function watch<
-  T extends Readonly<WatchSource<unknown>[]>,
+  T extends MultiWatchSources,
   Immediate extends Readonly<boolean> = false
 >(
-  sources: T,
-  cb: WatchCallback<MapSources<T>, MapOldSources<T, Immediate>>,
+  sources: [...T],
+  cb: WatchCallback<MapSources<T, false>, MapSources<T, Immediate>>,
+  options?: WatchOptions<Immediate>
+): WatchStopHandle
+
+// overload #2 for multiple sources w/ `as const`
+// watch([foo, bar] as const, () => {})
+// somehow [...T] breaks when the type is readonly
+export function watch<
+  T extends Readonly<MultiWatchSources>,
+  Immediate extends Readonly<boolean> = false
+>(
+  source: T,
+  cb: WatchCallback<MapSources<T, false>, MapSources<T, Immediate>>,
   options?: WatchOptions<Immediate>
 ): WatchStopHandle
 
@@ -112,10 +120,10 @@ export function watch<
 ): WatchStopHandle
 
 // implementation
-export function watch<T = any>(
-  source: WatchSource<T> | WatchSource<T>[],
-  cb: WatchCallback<T>,
-  options?: WatchOptions
+export function watch<T = any, Immediate extends Readonly<boolean> = false>(
+  source: T | WatchSource<T>,
+  cb: any,
+  options?: WatchOptions<Immediate>
 ): WatchStopHandle {
   if (__DEV__ && !isFunction(cb)) {
     warn(
@@ -124,13 +132,14 @@ export function watch<T = any>(
         `supports \`watch(source, cb, options?) signature.`
     )
   }
-  return doWatch(source, cb, options)
+  return doWatch(source as any, cb, options)
 }
 
 function doWatch(
-  source: WatchSource | WatchSource[] | WatchEffect,
+  source: WatchSource | WatchSource[] | WatchEffect | object,
   cb: WatchCallback | null,
-  { immediate, deep, flush, onTrack, onTrigger }: WatchOptions = EMPTY_OBJ
+  { immediate, deep, flush, onTrack, onTrigger }: WatchOptions = EMPTY_OBJ,
+  instance = currentInstance
 ): WatchStopHandle {
   if (__DEV__ && !cb) {
     if (immediate !== undefined) {
@@ -147,22 +156,36 @@ function doWatch(
     }
   }
 
-  const instance = currentInstance
+  const warnInvalidSource = (s: unknown) => {
+    warn(
+      `Invalid watch source: `,
+      s,
+      `A watch source can only be a getter/effect function, a ref, ` +
+        `a reactive object, or an array of these types.`
+    )
+  }
 
   let getter: () => any
-  if (isArray(source)) {
-    getter = () =>
-      source.map(
-        s =>
-          isRef(s)
-            ? s.value
-            : callWithErrorHandling(s, instance, ErrorCodes.WATCH_GETTER)
-      )
-  } else if (isRef(source)) {
-    getter = () => source.value
+  let forceTrigger = false
+  if (isRef(source)) {
+    getter = () => (source as Ref).value
+    forceTrigger = !!(source as Ref)._shallow
   } else if (isReactive(source)) {
     getter = () => source
     deep = true
+  } else if (isArray(source)) {
+    getter = () =>
+      source.map(s => {
+        if (isRef(s)) {
+          return s.value
+        } else if (isReactive(s)) {
+          return traverse(s)
+        } else if (isFunction(s)) {
+          return callWithErrorHandling(s, instance, ErrorCodes.WATCH_GETTER)
+        } else {
+          __DEV__ && warnInvalidSource(s)
+        }
+      })
   } else if (isFunction(source)) {
     if (cb) {
       // getter with cb
@@ -187,13 +210,7 @@ function doWatch(
     }
   } else {
     getter = NOOP
-    __DEV__ &&
-      warn(
-        `Invalid watch source: `,
-        source,
-        `A watch source can only be a getter/effect function, a ref, ` +
-          `a reactive object, or an array of these types.`
-      )
+    __DEV__ && warnInvalidSource(source)
   }
 
   if (cb && deep) {
@@ -224,63 +241,72 @@ function doWatch(
   }
 
   let oldValue = isArray(source) ? [] : INITIAL_WATCHER_VALUE
-  const applyCb = cb
-    ? () => {
-        if (instance && instance.isUnmounted) {
-          return
+  const job: SchedulerJob = () => {
+    if (!runner.active) {
+      return
+    }
+    if (cb) {
+      // watch(source, cb)
+      const newValue = runner()
+      if (deep || forceTrigger || hasChanged(newValue, oldValue)) {
+        // cleanup before running cb again
+        if (cleanup) {
+          cleanup()
         }
-        const newValue = runner()
-        if (deep || hasChanged(newValue, oldValue)) {
-          // cleanup before running cb again
-          if (cleanup) {
-            cleanup()
-          }
-          callWithAsyncErrorHandling(cb, instance, ErrorCodes.WATCH_CALLBACK, [
-            newValue,
-            // pass undefined as the old value when it's changed for the first time
-            oldValue === INITIAL_WATCHER_VALUE ? undefined : oldValue,
-            onInvalidate
-          ])
-          oldValue = newValue
-        }
+        callWithAsyncErrorHandling(cb, instance, ErrorCodes.WATCH_CALLBACK, [
+          newValue,
+          // pass undefined as the old value when it's changed for the first time
+          oldValue === INITIAL_WATCHER_VALUE ? undefined : oldValue,
+          onInvalidate
+        ])
+        oldValue = newValue
       }
-    : void 0
+    } else {
+      // watchEffect
+      runner()
+    }
+  }
 
-  let scheduler: (job: () => any) => void
+  // important: mark the job as a watcher callback so that scheduler knows
+  // it is allowed to self-trigger (#1727)
+  job.allowRecurse = !!cb
+
+  let scheduler: ReactiveEffectOptions['scheduler']
   if (flush === 'sync') {
-    scheduler = invoke
-  } else if (flush === 'pre') {
-    scheduler = job => {
+    scheduler = job
+  } else if (flush === 'post') {
+    scheduler = () => queuePostRenderEffect(job, instance && instance.suspense)
+  } else {
+    // default: 'pre'
+    scheduler = () => {
       if (!instance || instance.isMounted) {
-        queueJob(job)
+        queuePreFlushCb(job)
       } else {
         // with 'pre' option, the first call must happen before
         // the component is mounted so it is called synchronously.
         job()
       }
     }
-  } else {
-    scheduler = job => queuePostRenderEffect(job, instance && instance.suspense)
   }
 
   const runner = effect(getter, {
     lazy: true,
-    // so it runs before component update effects in pre flush mode
-    computed: true,
     onTrack,
     onTrigger,
-    scheduler: applyCb ? () => scheduler(applyCb) : scheduler
+    scheduler
   })
 
-  recordInstanceBoundEffect(runner)
+  recordInstanceBoundEffect(runner, instance)
 
   // initial run
-  if (applyCb) {
+  if (cb) {
     if (immediate) {
-      applyCb()
+      job()
     } else {
       oldValue = runner()
     }
+  } else if (flush === 'post') {
+    queuePostRenderEffect(runner, instance && instance.suspense)
   } else {
     runner()
   }
@@ -297,16 +323,14 @@ function doWatch(
 export function instanceWatch(
   this: ComponentInternalInstance,
   source: string | Function,
-  cb: Function,
+  cb: WatchCallback,
   options?: WatchOptions
 ): WatchStopHandle {
   const publicThis = this.proxy as any
   const getter = isString(source)
     ? () => publicThis[source]
     : source.bind(publicThis)
-  const stop = watch(getter, cb.bind(publicThis), options)
-  onBeforeUnmount(stop, this)
-  return stop
+  return doWatch(getter, cb.bind(publicThis), options, this)
 }
 
 function traverse(value: unknown, seen: Set<unknown> = new Set()) {
@@ -314,17 +338,14 @@ function traverse(value: unknown, seen: Set<unknown> = new Set()) {
     return value
   }
   seen.add(value)
-  if (isArray(value)) {
+  if (isRef(value)) {
+    traverse(value.value, seen)
+  } else if (isArray(value)) {
     for (let i = 0; i < value.length; i++) {
       traverse(value[i], seen)
     }
-  } else if (value instanceof Map) {
-    value.forEach((v, key) => {
-      // to register mutation dep for existing keys
-      traverse(value.get(key), seen)
-    })
-  } else if (value instanceof Set) {
-    value.forEach(v => {
+  } else if (isSet(value) || isMap(value)) {
+    value.forEach((v: any) => {
       traverse(v, seen)
     })
   } else {

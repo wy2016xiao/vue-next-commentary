@@ -30,6 +30,7 @@ describe('compiler sfc: transform asset url', () => {
 			<img src="~/fixtures/logo.png"/>
 			<img src="http://example.com/fixtures/logo.png"/>
 			<img src="/fixtures/logo.png"/>
+			<img src="data:image/png;base64,i"/>
 		`)
 
     expect(result.code).toMatchSnapshot()
@@ -58,13 +59,15 @@ describe('compiler sfc: transform asset url', () => {
   test('with explicit base', () => {
     const { code } = compileWithAssetUrls(
       `<img src="./bar.png"></img>` + // -> /foo/bar.png
-      `<img src="~bar.png"></img>` + // -> /foo/bar.png
       `<img src="bar.png"></img>` + // -> bar.png (untouched)
-        `<img src="@theme/bar.png"></img>`, // -> @theme/bar.png (untouched)
+      `<img src="~bar.png"></img>` + // -> still converts to import
+        `<img src="@theme/bar.png"></img>`, // -> still converts to import
       {
         base: '/foo'
       }
     )
+    expect(code).toMatch(`import _imports_0 from 'bar.png'`)
+    expect(code).toMatch(`import _imports_1 from '@theme/bar.png'`)
     expect(code).toMatchSnapshot()
   })
 
@@ -77,6 +80,52 @@ describe('compiler sfc: transform asset url', () => {
         includeAbsolute: true
       }
     )
+    expect(code).toMatchSnapshot()
+  })
+
+  // vitejs/vite#298
+  test('should not transform hash fragments', () => {
+    const { code } = compileWithAssetUrls(
+      `<svg viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+        <defs>
+          <circle id="myCircle" cx="0" cy="0" r="5" />
+        </defs>
+        <use x="5" y="5" xlink:href="#myCircle" />
+      </svg>`
+    )
+    // should not remove it
+    expect(code).toMatch(`"xlink:href": "#myCircle"`)
+  })
+
+  test('should allow for full base URLs, with paths', () => {
+    const { code } = compileWithAssetUrls(`<img src="./logo.png" />`, {
+      base: 'http://localhost:3000/src/'
+    })
+
+    expect(code).toMatchSnapshot()
+  })
+
+  test('should allow for full base URLs, without paths', () => {
+    const { code } = compileWithAssetUrls(`<img src="./logo.png" />`, {
+      base: 'http://localhost:3000'
+    })
+
+    expect(code).toMatchSnapshot()
+  })
+
+  test('should allow for full base URLs, without port', () => {
+    const { code } = compileWithAssetUrls(`<img src="./logo.png" />`, {
+      base: 'http://localhost'
+    })
+
+    expect(code).toMatchSnapshot()
+  })
+
+  test('should allow for full base URLs, without protocol', () => {
+    const { code } = compileWithAssetUrls(`<img src="./logo.png" />`, {
+      base: '//localhost'
+    })
+
     expect(code).toMatchSnapshot()
   })
 })

@@ -1,5 +1,6 @@
 import path from 'path'
 import {
+  ConstantTypes,
   createSimpleExpression,
   ExpressionNode,
   NodeTransform,
@@ -7,7 +8,12 @@ import {
   SourceLocation,
   TransformContext
 } from '@vue/compiler-core'
-import { isRelativeUrl, parseUrl, isExternalUrl } from './templateUtils'
+import {
+  isRelativeUrl,
+  parseUrl,
+  isExternalUrl,
+  isDataUrl
+} from './templateUtils'
 import { isArray } from '@vue/shared'
 
 export interface AssetURLTagConfig {
@@ -99,27 +105,28 @@ export const transformAssetUrl: NodeTransform = (
         !assetAttrs.includes(attr.name) ||
         !attr.value ||
         isExternalUrl(attr.value.content) ||
+        isDataUrl(attr.value.content) ||
+        attr.value.content[0] === '#' ||
         (!options.includeAbsolute && !isRelativeUrl(attr.value.content))
       ) {
         return
       }
 
       const url = parseUrl(attr.value.content)
-      if (options.base) {
-        // explicit base - directly rewrite the url into absolute url
-        // does not apply to absolute urls or urls that start with `@`
-        // since they are aliases
-        if (
-          attr.value.content[0] !== '@' &&
-          isRelativeUrl(attr.value.content)
-        ) {
-          // when packaged in the browser, path will be using the posix-
-          // only version provided by rollup-plugin-node-builtins.
-          attr.value.content = (path.posix || path).join(
-            options.base,
-            url.path + (url.hash || '')
-          )
-        }
+      if (options.base && attr.value.content[0] === '.') {
+        // explicit base - directly rewrite relative urls into absolute url
+        // to avoid generating extra imports
+        // Allow for full hostnames provided in options.base
+        const base = parseUrl(options.base)
+        const protocol = base.protocol || ''
+        const host = base.host ? protocol + '//' + base.host : ''
+        const basePath = base.path || '/'
+
+        // when packaged in the browser, path will be using the posix-
+        // only version provided by rollup-plugin-node-builtins.
+        attr.value.content =
+          host +
+          (path.posix || path).join(basePath, url.path + (url.hash || ''))
         return
       }
 
@@ -152,19 +159,26 @@ function getImportsExpressionExp(
       return existing.exp as ExpressionNode
     }
     const name = `_imports_${importsArray.length}`
-    const exp = createSimpleExpression(name, false, loc, true)
-    exp.isRuntimeConstant = true
+    const exp = createSimpleExpression(
+      name,
+      false,
+      loc,
+      ConstantTypes.CAN_HOIST
+    )
     context.imports.add({ exp, path })
     if (hash && path) {
-      const ret = context.hoist(
-        createSimpleExpression(`${name} + '${hash}'`, false, loc, true)
+      return context.hoist(
+        createSimpleExpression(
+          `${name} + '${hash}'`,
+          false,
+          loc,
+          ConstantTypes.CAN_HOIST
+        )
       )
-      ret.isRuntimeConstant = true
-      return ret
     } else {
       return exp
     }
   } else {
-    return createSimpleExpression(`''`, false, loc, true)
+    return createSimpleExpression(`''`, false, loc, ConstantTypes.CAN_HOIST)
   }
 }

@@ -1,8 +1,7 @@
-import { Props, PushFn, renderVNodeChildren } from '../renderToString'
-import { ComponentInternalInstance, Slot, Slots } from 'vue'
+import { ComponentInternalInstance, Slots } from 'vue'
+import { Props, PushFn, renderVNodeChildren, SSRBufferItem } from '../render'
 
 export type SSRSlots = Record<string, SSRSlot>
-
 export type SSRSlot = (
   props: Props,
   push: PushFn,
@@ -22,16 +21,47 @@ export function ssrRenderSlot(
   push(`<!--[-->`)
   const slotFn = slots[slotName]
   if (slotFn) {
-    if (slotFn.length > 1) {
-      // only ssr-optimized slot fns accept more than 1 arguments
-      const scopeId = parentComponent && parentComponent.type.__scopeId
-      slotFn(slotProps, push, parentComponent, scopeId ? ` ${scopeId}-s` : ``)
-    } else {
+    const scopeId = parentComponent && parentComponent.type.__scopeId
+    const slotBuffer: SSRBufferItem[] = []
+    const bufferedPush = (item: SSRBufferItem) => {
+      slotBuffer.push(item)
+    }
+    const ret = slotFn(
+      slotProps,
+      bufferedPush,
+      parentComponent,
+      scopeId ? ` ${scopeId}-s` : ``
+    )
+    if (Array.isArray(ret)) {
       // normal slot
-      renderVNodeChildren(push, (slotFn as Slot)(slotProps), parentComponent)
+      renderVNodeChildren(push, ret, parentComponent)
+    } else {
+      // ssr slot.
+      // check if the slot renders all comments, in which case use the fallback
+      let isEmptySlot = true
+      for (let i = 0; i < slotBuffer.length; i++) {
+        if (!isComment(slotBuffer[i])) {
+          isEmptySlot = false
+          break
+        }
+      }
+      if (isEmptySlot) {
+        if (fallbackRenderFn) {
+          fallbackRenderFn()
+        }
+      } else {
+        for (let i = 0; i < slotBuffer.length; i++) {
+          push(slotBuffer[i])
+        }
+      }
     }
   } else if (fallbackRenderFn) {
     fallbackRenderFn()
   }
   push(`<!--]-->`)
+}
+
+const commentRE = /^<!--.*-->$/
+function isComment(item: SSRBufferItem) {
+  return typeof item === 'string' && commentRE.test(item)
 }

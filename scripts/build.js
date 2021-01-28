@@ -47,6 +47,10 @@ const commit = execa.sync('git', ['rev-parse', 'HEAD']).stdout.slice(0, 7)
 run()
 
 async function run() {
+  if (isRelease) {
+    // remove build cache for release builds to avoid outdated enum values
+    await fs.remove(path.resolve(__dirname, '../node_modules/.rts2_cache'))
+  }
   if (!targets.length) {
     // 没有命令行参数
     // 目前只有npm run build
@@ -63,9 +67,25 @@ async function run() {
  * @param {string[]} targets - 包名数组
  */
 async function buildAll(targets) {
-  for (const target of targets) {
-    await build(target)
+  await runParallel(require('os').cpus().length, targets, build)
+}
+
+async function runParallel(maxConcurrency, source, iteratorFn) {
+  const ret = []
+  const executing = []
+  for (const item of source) {
+    const p = Promise.resolve().then(() => iteratorFn(item, source))
+    ret.push(p)
+
+    if (maxConcurrency <= source.length) {
+      const e = p.then(() => executing.splice(executing.indexOf(e), 1))
+      executing.push(e)
+      if (executing.length >= maxConcurrency) {
+        await Promise.race(executing)
+      }
+    }
   }
+  return Promise.all(ret)
 }
 
 /**
